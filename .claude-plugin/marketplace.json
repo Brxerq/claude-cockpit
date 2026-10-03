@@ -1,0 +1,12 @@
+{
+  "name": "claude-cockpit",
+  "owner": { "name": "Syed Muhammad Hassaan", "url": "https://github.com/Brxerq" },
+  "metadata": { "description": "Cockpit: zero-token progress bars and a cache-aware model and effort router for Claude Code" },
+  "plugins": [
+    {
+      "name": "cockpit",
+      "source": "./plugins/cockpit",
+      "description": "Progress bars from your todo list plus a router that picks the model and effort for every prompt"
+    }
+  ]
+}

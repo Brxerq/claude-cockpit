@@ -1,0 +1,30 @@
+{
+  "name": "cockpit",
+  "version": "0.6.1",
+  "description": "Progress bars from your todo list at zero extra tokens, and a router where you pick the model and effort for quick, normal and hard prompts",
+  "author": {
+    "name": "Syed Muhammad Hassaan",
+    "url": "https://github.com/Brxerq"
+  },
+  "homepage": "https://github.com/Brxerq/claude-cockpit",
+  "repository": "https://github.com/Brxerq/claude-cockpit",
+  "license": "MIT",
+  "keywords": [
+    "progress",
+    "router",
+    "model",
+    "effort",
+    "tokens",
+    "cache",
+    "mod"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "sounds": {
+      "type": "boolean",
+      "title": "Sounds",
+      "description": "Soft sounds when Claude needs a decision, hits an error or finishes",
+      "default": true
+    }
+  }
+}
