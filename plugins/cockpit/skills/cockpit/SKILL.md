@@ -1,6 +1,6 @@
 ---
 name: cockpit
-description: Reference for Cockpit's plan_progress bars and its /route model router. The bar rules are already in the system prompt; load only when the user asks about the bars or the router, or a bar call was refused.
+description: Reference for Cockpit's plan_progress bars, its /route model router and its /cache prompt-cache meter. The bar rules are already in the system prompt; load only when the user asks about the bars, the router or the cache meter, or a bar call was refused.
 ---
 
 # Bars
@@ -33,3 +33,13 @@ Each typed prompt is sorted into quick, normal or hard, and runs on the model an
 - All settings live in `~/.claude/cockpit.json`.
 - One prompt only: lead with `@hard`, `@opus`, `@max` and so on; stripped before sending.
 - Per project: `.claude/cockpit.json` with `routes` and `words`.
+
+# Cache meter (/cache)
+
+A row above the prompt, once the conversation passes 30k tokens: a bar that drains until the prompt cache expires (5 minutes, or 1 hour on a subscription), one warning before it does, and what the next prompt costs after. It never adds anything to the conversation.
+
+- `/cache`: lifetime and its source, the last request's cache hit, time left
+- `/cache warm` or the row's Keep warm button: one side request that reads the conversation from the cache and renews it
+- `/cache auto 2|off`: pings Cockpit may send by itself in one pause (0 to 5, off by default)
+- `/cache ttl 5m|1h|auto`, `/cache on|off`
+- Settings live under `cache` in `~/.claude/cockpit.json`.

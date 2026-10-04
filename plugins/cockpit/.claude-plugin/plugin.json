@@ -1,7 +1,7 @@
 {
   "name": "cockpit",
-  "version": "0.6.1",
-  "description": "Progress bars from your todo list at zero extra tokens, and a router where you pick the model and effort for quick, normal and hard prompts",
+  "version": "0.7.0",
+  "description": "Progress bars from your todo list at zero extra tokens, a router where you pick the model and effort for quick, normal and hard prompts, and a prompt-cache meter that can keep the cache warm",
   "author": {
     "name": "Syed Muhammad Hassaan",
     "url": "https://github.com/Brxerq"
@@ -16,6 +16,8 @@
     "effort",
     "tokens",
     "cache",
+    "prompt-cache",
+    "keep-warm",
     "mod"
   ],
   "types": "./types/index.d.ts",

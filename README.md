@@ -6,6 +6,7 @@
 
 - **Progress**: live bars above your prompt. Claude's own todo list becomes a bar automatically, so tracking progress costs zero extra tokens.
 - **Router**: you pick a model and effort for quick, normal and hard prompts in a small panel, and every prompt runs on the one that fits.
+- **Cache meter**: a row that counts down to the moment the prompt cache expires, warns once before it does, and can keep it warm for under a tenth of what a rewrite costs.
 
 ## Install
 
@@ -26,8 +27,10 @@ Start a new session afterwards. Cockpit is built on Claude Code's function-hook 
 | Bars from Claude's todo list | **0** extra. Claude already writes that list; Cockpit only draws it. |
 | Rules in the system prompt | About 40 tokens, read from the prompt cache |
 | Named-stage bars (optional) | A short tool call, about once per stage, only on long tasks |
+| Cache meter | **0**. It reads the token counts every reply already reports. |
+| Keep-warm ping (only when you ask, or allow it) | One read of the conversation from the cache: a tenth of the input price or less, and a short reply. The toast shows what it cost. |
 
-Cockpit never adds reminders to the conversation, never refuses an edit, and never sends Claude back at the end of a turn.
+Cockpit never adds reminders to the conversation, never refuses an edit, and never sends Claude back at the end of a turn. A keep-warm ping is a side request: it adds nothing to the conversation.
 
 ## The router
 
@@ -103,7 +106,8 @@ Everything is saved in one file, `~/.claude/cockpit.json`, which the panel and t
     { "words": ["redesign"], "route": "sonnet max" }
   ],
   "top": "fable",
-  "saver": true
+  "saver": true,
+  "cache": { "show": true, "auto": 0 }
 }
 ```
 
@@ -116,6 +120,34 @@ Claude Code caches the conversation per model, so a model switch makes the next 
 - Always lets you move to the model you chose for **Normal** prompts. That is a one-time move.
 - With the **cache saver** on (the default), a long conversation (past 30k tokens) holds back a one-off trip to another model, unless you asked for it (a tag, "ultrathink", "still broken") or the cache has already expired. The panel says when this happened. Turn it off with `/route saver off` if you always want the exact model.
 - Fixes the route at the start of a reply, so tool loops never switch mid-reply. Subagents are never touched.
+
+## The cache meter
+
+Claude Code caches your conversation on the API side, so each reply re-reads it at about a tenth of the normal input price. The cache expires 5 minutes after the last request (1 hour on a Claude subscription within its plan usage). After that, the next prompt writes the whole conversation again: 1.25 times the input price for the 5-minute cache, 2 times for the 1-hour one. On a long conversation that is the most expensive moment of the session.
+
+Once a conversation passes 30k tokens, a row above the prompt shows where the cache stands:
+
+- A bar drawn like the progress bars (same pixel fill, same pill, same colours) that drains as the cache runs out. The pill names the state: **Warm** (green), **Cooling** (amber, under 40% left), **Expiring** (red, the last minute, or the last 5 minutes of the 1-hour cache), **Expired**, and **In use** (violet) while a reply runs and renews it. The percent beside it is the share of the lifetime left, and the ✕ turns the row off.
+- One toast and a sound when it is about to expire, with what the next prompt would cost. Not a countdown of toasts.
+- A **Keep warm** button once the cache is past 60% of its life. It sends one tiny side request that reads the conversation from the cache, which renews it. Nothing is added to your conversation.
+- When the cache has expired, the row says how many tokens the next prompt re-reads, so you can `/clear` first if the task is done.
+- When a reply missed the cache, the row says why: the model changed, the lifetime had passed, or the prompt prefix changed.
+
+Want it kept warm while you are away? `/cache auto 2` lets Cockpit send up to 2 pings by itself in one pause (0 to 5; off by default, and never when a plan window is 95% used). Each ping costs under a tenth of one rewrite, so it pays off if you come back before the cache would have expired.
+
+| Command | Does |
+|---|---|
+| `/cache` | Lifetime and where it came from, the last request, time left |
+| `/cache warm` | Keeps the cache warm now |
+| `/cache auto 2`, `/cache auto off` | Pings Cockpit may send by itself in one pause |
+| `/cache ttl 5m`, `1h`, `auto` | Sets the lifetime yourself |
+| `/cache on`, `/cache off` | The row, its warning and its pings |
+
+**Which lifetime.** Cockpit follows [Claude Code's own rules](https://code.claude.com/docs/en/prompt-caching#cache-lifetime): `FORCE_PROMPT_CACHING_5M`, `CLAUDE_CODE_PROMPT_CACHE_TTL`, the `promptCacheTtl` setting, `ENABLE_PROMPT_CACHING_1H`, then the account (1 hour on a subscription, 5 minutes on usage credits, an API key or a cloud provider). It then checks that against the traffic: a reply that reads the cache more than 5 minutes after the last one proves the hour. `/cache` names the source in use.
+
+**How it differs from a plain cache countdown.** It can renew the cache instead of only telling you to send a message. The bar animates by itself, so nothing is redrawn each second. And the router's cache saver now uses the real lifetime instead of assuming an hour.
+
+**One thing it learns as it goes.** Claude Code sends side requests with the 5-minute lifetime. Whether such a read renews a 1-hour cache for the full hour is not documented, so on a subscription a ping counts as 5 more minutes until a later reply proves it bought more. From then on pings count for the hour.
 
 ## Progress bars
 
@@ -131,7 +163,7 @@ Commands: `/progress` (hide or show), `/progress-demo`, `/progress-sounds`, `/pr
 
 ## Good to know
 
-- Cockpit is early (0.6.0). Please open an issue when something looks off.
+- Cockpit is early (0.7.0). Please open an issue when something looks off.
 - The keyword rules are English. Add your own words with `/route word` or the project file.
 - Your choices are saved for every project; `/route off` resets when the app restarts.
 - `.claude/cockpit.json` is read when a session starts and whenever you change a choice.
@@ -141,6 +173,8 @@ Commands: `/progress` (hide or show), `/progress-demo`, `/progress-sounds`, `/pr
 ```
 node plugins/cockpit/hooks/route.test.mjs   # router, cache guard, stats
 node plugins/cockpit/hooks/plan.test.mjs    # bars and drawing (Node 22+)
+node plugins/cockpit/hooks/cache.test.mjs   # cache lifetime, misses, keep-warm
+claude plugin test plugins/cockpit          # the cache meter through the engine
 claude plugin validate plugins/cockpit
 ```
 

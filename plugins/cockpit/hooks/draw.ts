@@ -110,7 +110,6 @@ export function drawTrack(p: Plan, W: number): Track {
 
   const acc = hex(STATE_COLOR[p.state])
   const light = mix(acc, [255, 255, 255], 0.32)
-  const grey = [132, 130, 138]
   const ease = 'calcMode="spline" keyTimes="0;1" keySplines=".2 .8 .2 1"'
   const glide = Math.abs(from - fx) > 0.5
 
@@ -121,24 +120,7 @@ export function drawTrack(p: Plan, W: number): Track {
     if (i < p.stages.length - 1) bounds.push((acc2 / w.total) * W)
   })
 
-  // pixels: 3px grid, 7 rows, denser towards the head, twinkling and warming from grey to the state colour
-  const buckets = [0, 1, 2, 3, 4].map(b => {
-    const m = b / 4
-    const dense = 0.22 + 0.78 * Math.pow(m, 1.5)
-    return { color: rgb(mix(grey, light, m)), opacity: (0.35 + 0.65 * dense).toFixed(2) }
-  })
-  const dots = new Map<string, string>()
-  for (let col = 0; col * 3 < fx; col++) {
-    const x = col * 3
-    const u = Math.min(1, (x + 1.5) / fx)
-    const dense = 0.22 + 0.78 * Math.pow(u, 1.5)
-    const bucket = Math.min(4, Math.floor(Math.min(1, Math.pow(u, 0.9) * 1.1) * 4.99))
-    for (let r = 0; r < 7; r++) {
-      if (hash(col, r, 1) > dense + 0.1) continue
-      addDot(dots, `b${bucket} t${Math.floor(hash(col, r, 2) * 4)}`, x, 1 + r * 3)
-    }
-  }
-  const px = [...dots].map(([cls, d]) => `<path class="${cls}" d="${d}"/>`).join('')
+  const { css: fillCss, px } = pixelFill(acc, fx)
 
   const took = stepTimes(p)
   const tipRules: string[] = []
@@ -219,15 +201,9 @@ export function drawTrack(p: Plan, W: number): Track {
   const kFrom = clampX(from)
 
   const style = `<style>
-.b0{fill:${buckets[0]?.color};fill-opacity:${buckets[0]?.opacity}}.b1{fill:${buckets[1]?.color};fill-opacity:${buckets[1]?.opacity}}
-.b2{fill:${buckets[2]?.color};fill-opacity:${buckets[2]?.opacity}}.b3{fill:${buckets[3]?.color};fill-opacity:${buckets[3]?.opacity}}
-.b4{fill:${buckets[4]?.color};fill-opacity:${buckets[4]?.opacity}}
-.t0,.t1,.t2,.t3{animation:tw 2.2s ease-in-out infinite}
-.t1{animation-duration:2.8s;animation-delay:-.7s}.t2{animation-duration:1.9s;animation-delay:-1.3s}.t3{animation-duration:3.3s;animation-delay:-.4s}
-@keyframes tw{0%,100%{opacity:1}50%{opacity:.45}}
-.kt{font:500 12px 'Anthropic Sans',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;fill:${INK}}
+${fillCss}
+.kt{font:${KNOB_FONT};fill:${INK}}
 .kc{font-weight:400;fill-opacity:.75}
-@media (prefers-reduced-motion:reduce){.t0,.t1,.t2,.t3{animation:none}}
 </style>`
   const hoverStyle = `<style>
 .tp{opacity:0;transition:opacity .12s;pointer-events:none}${tipRules.length ? `${tipRules.join(',')}{opacity:1}` : ''}
@@ -251,6 +227,84 @@ ${CLOCK_CSS}
   const overlay = `${open}${SEE_THROUGH}${hoverStyle}${hits}<g transform="translate(${kx.toFixed(1)} 0)">${timePill}</g>${tips}</svg>`
 
   return { base, overlay }
+}
+
+// the pixels of a fill: 3px grid, 7 rows, denser towards the head, twinkling and warming from grey to the state
+// colour. css holds their classes and the twinkle, px the dots; both drawings of a bar and of the cache row use it
+const GREY = [132, 130, 138]
+const KNOB_FONT = "500 12px 'Anthropic Sans',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif"
+
+function pixelFill(acc: number[], fx: number): { css: string; px: string } {
+  const light = mix(acc, [255, 255, 255], 0.32)
+  const css = [0, 1, 2, 3, 4]
+    .map(b => {
+      const m = b / 4
+      const dense = 0.22 + 0.78 * Math.pow(m, 1.5)
+      return `.b${b}{fill:${rgb(mix(GREY, light, m))};fill-opacity:${(0.35 + 0.65 * dense).toFixed(2)}}`
+    })
+    .join('')
+  const dots = new Map<string, string>()
+  for (let col = 0; col * 3 < fx; col++) {
+    const x = col * 3
+    const u = Math.min(1, (x + 1.5) / fx)
+    const dense = 0.22 + 0.78 * Math.pow(u, 1.5)
+    const bucket = Math.min(4, Math.floor(Math.min(1, Math.pow(u, 0.9) * 1.1) * 4.99))
+    for (let r = 0; r < 7; r++) {
+      if (hash(col, r, 1) > dense + 0.1) continue
+      addDot(dots, `b${bucket} t${Math.floor(hash(col, r, 2) * 4)}`, x, 1 + r * 3)
+    }
+  }
+  const twinkle = `.t0,.t1,.t2,.t3{animation:tw 2.2s ease-in-out infinite}
+.t1{animation-duration:2.8s;animation-delay:-.7s}.t2{animation-duration:1.9s;animation-delay:-1.3s}.t3{animation-duration:3.3s;animation-delay:-.4s}
+@keyframes tw{0%,100%{opacity:1}50%{opacity:.45}}
+@media (prefers-reduced-motion:reduce){.t0,.t1,.t2,.t3{animation:none}}`
+
+  return { css: css + '\n' + twinkle, px: [...dots].map(([cls, d]) => `<path class="${cls}" d="${d}"/>`).join('') }
+}
+
+// the cache row's track: the same pill, pixel fill and knob as a progress bar, but the fill drains by itself over the
+// time left, so the row is never redrawn each second. Colours are the bars' own: green while warm, amber when it is
+// cooling, red when about to expire or expired, violet while a reply is running and renewing it
+export type MeterLook = 'warm' | 'low' | 'soon' | 'cold' | 'live'
+export const METER_STATE: Record<MeterLook, PlanState> = { warm: 'done', low: 'needs_input', soon: 'error', cold: 'error', live: 'running' }
+export const METER_COLOR = { warm: STATE_COLOR.done, low: STATE_COLOR.needs_input, soon: STATE_COLOR.error, cold: STATE_COLOR.error, live: STATE_COLOR.running }
+export const METER_LABEL: Record<MeterLook, string> = { warm: 'Warm', low: 'Cooling', soon: 'Expiring', cold: 'Expired', live: 'In use' }
+
+// leftMs: what the knob shows from now; the fill reaches empty after that long. A cold or live row stands still
+export function meterSvg(W: number, look: MeterLook, leftMs: number, lifeMs: number): string {
+  const H = TRACK_H
+  const isMoving = look !== 'cold' && look !== 'live' && leftMs > 0
+  const frac = look === 'live' ? 1 : look === 'cold' ? 0 : Math.min(1, leftMs / lifeMs)
+  const fx = frac * W
+  const color = METER_COLOR[look]
+  const name = METER_LABEL[look]
+  const icon = look === 'cold' || look === 'soon' ? ICON_PATH.error : undefined
+  const iconW = icon ? 16 : 0
+  const kw = Math.round(20 + iconW + textWidth(name) + 6 + 6)
+  const left = -(iconW + textWidth(name)) / 2
+  const clampX = (x: number) => Math.max(kw / 2, Math.min(W - kw / 2, x))
+  const dur = (leftMs / 1000).toFixed(1)
+  // the knob follows the fill's head, and rests at the left edge once the fill is smaller than it
+  const rest = clampX(0)
+  const reach = isMoving && fx > rest ? ((fx - rest) / fx).toFixed(4) : '1'
+  const drainFill = isMoving ? `<animate attributeName="width" from="${fx.toFixed(1)}" to="0" dur="${dur}s" fill="freeze"/>` : ''
+  const drainKnob = isMoving ? `<animateTransform attributeName="transform" type="translate" values="${clampX(fx).toFixed(1)} 0;${rest} 0;${rest} 0" keyTimes="0;${reach};1" dur="${dur}s" fill="freeze"/>` : ''
+  const knob =
+    `<rect x="${-kw / 2}" y="0" width="${kw}" height="${H}" rx="${H / 2}" fill="${color}"/>` +
+    (icon ? `<path d="${icon}" transform="translate(${left.toFixed(1)} 5) scale(.5)" fill="none" stroke="${INK}" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>` : '') +
+    `<text x="${(left + iconW + textWidth(name) / 2).toFixed(1)}" y="${H / 2 + 4.2}" text-anchor="middle" class="kt">${esc(name)}</text>`
+  const acc = hex(color)
+  const { css, px } = pixelFill(acc, fx)
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><style>
+${css}
+.kt{font:${KNOB_FONT};fill:${INK}}
+</style>
+<defs><clipPath id="pill"><rect width="${W}" height="${H}" rx="${H / 2}"/></clipPath><clipPath id="fill"><rect width="${fx.toFixed(1)}" height="${H}">${drainFill}</rect></clipPath>
+<linearGradient id="base" x1="0" x2="${fx.toFixed(1)}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="${rgb(acc)}" stop-opacity=".05"/><stop offset="1" stop-color="${rgb(acc)}" stop-opacity=".33"/></linearGradient></defs>
+<g clip-path="url(#pill)"><rect width="${W}" height="${H}" fill="#808080" fill-opacity=".16"/>
+<g clip-path="url(#fill)"><rect width="${fx.toFixed(1)}" height="${H}" fill="url(#base)"/>${px}</g></g>
+<g transform="translate(${(look === 'cold' ? rest : clampX(fx)).toFixed(1)} 0)">${drainKnob}${knob}</g></svg>`
 }
 
 export const elapsed = (ms: number) => {

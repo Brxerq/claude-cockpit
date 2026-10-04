@@ -6,7 +6,7 @@
     {
       "name": "cockpit",
       "source": "./plugins/cockpit",
-      "description": "Progress bars from your todo list plus a router that picks the model and effort for every prompt"
+      "description": "Progress bars from your todo list, a router that picks the model and effort for every prompt, and a prompt-cache meter that keeps the cache warm"
     }
   ]
 }

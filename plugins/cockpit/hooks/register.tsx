@@ -1,15 +1,18 @@
-// Cockpit: progress bars, sounds and a model and effort router.
+// Cockpit: progress bars, sounds, a model and effort router and a prompt-cache meter.
 // The bar drawing and tool handling derive from plan-progress by Kirill Serditov (MIT, github.com/zycck/claude-mods);
 // agent strips and the demo reel were dropped. The router (./route.mjs) and the token savings are new.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Plan, PlanStage, PlanState, Route, Router, Rule, Spec, StepStatus } from '../types'
-import { elapsed, lastHead, plural, STATE_COLOR, STATE_GLYPH, textWidth, trackSvg, TRACK_H } from './draw.ts'
+import type { Cache, Plan, PlanStage, PlanState, Route, Router, Rule, Spec, StepStatus, Ttl } from '../types'
+// @ts-ignore plain JS, as the router is
+import { accountOf, asTtl, decideTtl, emptyCache, leftLabel, leftMs, phase, report, touch, TTL_MS, WARN_MS } from './cache.mjs'
+import { elapsed, lastHead, METER_COLOR, METER_STATE, meterSvg, plural, STATE_COLOR, STATE_GLYPH, textWidth, trackSvg, TRACK_H } from './draw.ts'
+import type { MeterLook } from './draw.ts'
 import { carryDone, DEMO, isFinished, normalize, parsePlan, PLAN_ID, pointAt, slug, str, where } from './plan.ts'
 import type { Raw } from './plan.ts'
 // @ts-ignore plain JS, so its self-check runs under node without a build
-import { addTurn, buildRoutes, classify, emptyRoutes, emptyStats, formatStats, guard, isSetUp, MODELS, parseRule, parseSpec, routeFor, routeLabel, shortModel, specText, takesEffort, TASK_INFO, TASKS } from './route.mjs'
+import { addTurn, buildRoutes, classify, emptyRoutes, emptyStats, formatStats, guard, isSetUp, k, MODELS, parseRule, parseSpec, routeFor, routeLabel, shortModel, specText, takesEffort, TASK_INFO, TASKS } from './route.mjs'
 
 const TOOL = 'mcp__cockpit__plan_progress'
 const MAX_BARS = 3
@@ -19,7 +22,8 @@ const plans = atom({ plugin: 'cockpit', key: 'plans' } as const, [])
 // the model and effort the "add a rule" dropdowns hold until the rule is added
 const ruleDraft = atom({ plugin: 'cockpit', key: 'ruleDraft' } as const, { model: 'sonnet', effort: 'high' })
 const isOpen = atom({ plugin: 'cockpit', key: 'isOpen' } as const, true)
-const router = atom({ plugin: 'cockpit', key: 'router' } as const, { mode: 'auto', routes: emptyRoutes(), rules: [], top: null, saver: true, pending: null, current: null, ran: null, seen: null, lastEnd: 0, switched: false, stats: emptyStats() } as Router)
+const router = atom({ plugin: 'cockpit', key: 'router' } as const, { mode: 'auto', routes: emptyRoutes(), rules: [], top: null, saver: true, pending: null, current: null, ran: null, seen: null, switched: false, stats: emptyStats() } as Router)
+const cache = atom({ plugin: 'cockpit', key: 'cache' } as const, emptyCache() as Cache)
 
 // this text sits in the cached system prompt (about 40 tokens), so it stays short and never changes within a session
 const RULES = `# Cockpit
@@ -172,19 +176,18 @@ async function restorePlans($: EngineInterface) {
 // too. A project can add to it in .claude/cockpit.json (its rules come first, its routes win). Shape:
 // { "routes": { "quick": "haiku", "normal": "sonnet high", "hard": "opus high" },
 //   "rules": [{ "words": ["redesign"], "route": "sonnet max" }], "top": "fable", "saver": true,
-//   "words": { "quick": ["changelog"] } }
+//   "words": { "quick": ["changelog"] }, "cache": { "show": true, "auto": 0, "ttl": "1h" } }
 
 const PROJECT_FILE = '.claude/cockpit.json'
 const PANE = 'cockpit-router'
-const FREE_BELOW = 30000 // context tokens under which a switch is cheap enough to always allow
-const CACHE_TTL_MS = 60 * 60000 // past this idle time the prompt cache is gone anyway
+const FREE_BELOW = 30000 // context tokens under which a switch, or a lapsed cache, is cheap enough to let pass
 const MODEL_CHOICES: [string, string | null][] = [['Keep', null], ['Haiku', MODELS.haiku], ['Sonnet', MODELS.sonnet], ['Opus', MODELS.opus], ['Fable', MODELS.fable]]
 // one colour per model, readable on light and dark panels
 const MODEL_COLOR: Record<string, string | undefined> = { haiku: '#1D9E75', sonnet: '#378ADD', opus: '#7F77DD', fable: '#BA7517' }
 const EFFORT_CHOICES: [string, string | null][] = [['Keep', null], ['Low', 'low'], ['Medium', 'medium'], ['High', 'high'], ['XHigh', 'xhigh'], ['Max', 'max']]
 
 type RuleText = { words: string[]; route: string }
-type Settings = { routes?: Record<string, string>; rules?: RuleText[]; top?: string | null; saver?: boolean; words?: Record<string, string[]> }
+type Settings = { routes?: Record<string, string>; rules?: RuleText[]; top?: string | null; saver?: boolean; words?: Record<string, string[]>; cache?: { show?: boolean; auto?: number; ttl?: string } }
 let projectWords: Record<string, string[]> = {}
 
 // plugins always live under the Claude config folder (~/.claude), so its path comes from the plugin's own
@@ -226,6 +229,14 @@ async function loadRoutes($: EngineInterface) {
   const top = parseSpec(String(project.top ?? mine.top ?? ''))?.model ?? null
   const saver = (project.saver ?? mine.saver) !== false
   await update($, router, x => ({ ...x, routes, rules, top, saver }))
+  const pin = asTtl(mine.cache?.ttl) as Ttl | null
+  const auto = Math.max(0, Math.min(MAX_AUTO, Math.floor(Number(mine.cache?.auto) || 0)))
+  await update($, cache, x => onLife({ ...x, show: mine.cache?.show !== false, auto, pin }, pin ?? x.seen ?? x.ttl))
+}
+
+async function setCache($: EngineInterface, patch: NonNullable<Settings['cache']>) {
+  const s = await readSettings($)
+  await writeSettings($, { ...s, cache: { ...s.cache, ...patch } })
 }
 
 async function setRoute($: EngineInterface, task: string, patch: Partial<Spec>) {
@@ -259,6 +270,94 @@ async function openPanel($: EngineInterface) {
   return $.ui.open({ id: PANE, title: 'Model router', focus: true, closeOnEscape: true })
 }
 
+// ---------- cache meter ----------
+// The rules are in ./cache.mjs. This half feeds them each request of the main conversation, warns once before the
+// entry lapses, and can keep it warm.
+
+const MAX_AUTO = 5
+// a question answered with almost nothing; what counts is the request around it, the conversation read from the cache
+const PING = 'Reply with a single period.'
+// output tokens past which a ping was no cheap read (the session's effort made the model think over it)
+const PING_MAX_OUT = 500
+// what Claude Code's own lifetime rules read, kept from session start
+let ttlEnv: { force5m?: string; ttlVar?: string; enable1h?: string } = {}
+let ttlSetting: unknown
+let isPinging = false
+let meterText = ''
+let warnedAt = 0
+
+// the entry the last request left, counted on another lifetime
+const onLife = (x: Cache, life: Ttl): Cache => (x.at && !x.viaPing ? { ...x, life, until: x.at + TTL_MS[life] } : x)
+
+// the lifetime the account's rules give. When it changes (the first reply names the plan, or a subscription runs
+// into usage credits) what the traffic showed before no longer holds
+async function setAccount($: EngineInterface, windows: readonly { kind: string; percentUsed: number }[]) {
+  const d = decideTtl(ttlEnv, ttlSetting, accountOf(windows)) as { ttl: Ttl; source: string }
+  const c = await read($, cache)
+  if (c.ttl !== d.ttl) await update($, cache, x => onLife({ ...x, ...d, seen: null }, x.pin ?? d.ttl))
+  else if (c.source !== d.source) await update($, cache, x => ({ ...x, ...d }))
+}
+
+type Sample = { at: number; model: string; read: number; write: number; fresh: number; ping: boolean }
+
+async function sawRequest($: EngineInterface, s: Sample) {
+  const before = (await read($, cache)).pingSeen
+  await update($, cache, x => touch(x, s) as Cache)
+  // what a ping is worth on this account is learnt once, so it is kept for later sessions
+  const after = (await read($, cache)).pingSeen
+  if (after !== before) await $.store.set('pingTtl', after)
+}
+
+// one tool-less question over the conversation as it was last sent: the API serves it from the cache, which renews
+// the entry at the read price instead of the rewrite a lapsed one costs. Answers with what happened, in words
+async function keepWarm($: EngineInterface): Promise<string> {
+  const c = await read($, cache)
+  const startedAt = await $.clock.now()
+  if (isPinging || c.busy) return 'Claude is working: every request keeps the cache warm.'
+  if (leftMs(c, startedAt) <= 0) return 'Nothing to keep warm: the cache has expired, or nothing is cached yet.'
+  isPinging = true
+  try {
+    const r = await $.model.fork({ prompt: PING })
+    if (!('usage' in r)) return 'Nothing to keep warm yet.'
+    const u = r.usage
+    const isHit = u.cache_read_input_tokens >= c.tokens * 0.5
+    // a ping that missed paid for the whole conversation, and one the model thought long over paid in output:
+    // no more by themselves in this pause
+    const isCheap = isHit && u.output_tokens <= PING_MAX_OUT
+    await update($, cache, x => ({ ...(touch(x, { at: startedAt, model: x.model, read: u.cache_read_input_tokens, write: u.cache_creation_input_tokens, fresh: u.input_tokens, ping: true }) as Cache), pings: isCheap ? x.pings + 1 : Math.max(x.pings + 1, x.auto) }))
+    await update($, router, x => ({ ...x, stats: addTurn(x.stats, 'keep-warm', u, false) }))
+    if (isHit) return `Cache kept warm: ${k(u.cache_read_input_tokens)} tokens read at the cache price, ${u.output_tokens} out.`
+    return `Keep-warm missed: the cache served ${k(u.cache_read_input_tokens)} of ${k(c.tokens)} tokens${!r.isAnswered && r.reason === 'api-error' ? ` (API error ${r.status ?? 'without a reply'})` : ''}.`
+  } catch (err) {
+    return `Keep-warm failed: ${err instanceof Error ? err.message : String(err)}`
+  } finally {
+    isPinging = false
+  }
+}
+
+// runs each second and redraws only when the row's clock text changes. Once per entry, inside the warning: a
+// keep-warm ping if you allowed them, else one toast and a sound
+async function watchCache($: EngineInterface) {
+  const c = await read($, cache)
+  if (!c.show || !c.at) return
+  const left = leftMs(c, await $.clock.now())
+  const text = c.busy ? 'live' : leftLabel(left)
+  if (text !== meterText) {
+    meterText = text
+    $.ui.invalidate('ui.render')
+  }
+  if (c.busy || c.tokens < FREE_BELOW || left <= 0 || left > WARN_MS[c.life] || warnedAt === c.at) return
+  warnedAt = c.at
+  // a plan window almost used up is not spent on pings
+  const isNearLimit = (await $.session.usage()).rateLimits.some(w => w.percentUsed >= 95)
+  if (c.pings < c.auto && !isNearLimit) {
+    $.ui.toast(await keepWarm($))
+    return
+  }
+  $.ui.toast(`Cache expires in ${leftLabel(left)}. After that the next prompt re-reads ${k(c.tokens)} tokens at full price. /cache warm keeps it.`, { timeoutMs: 15000 })
+  play($, 'decision')
+}
+
 const title = (t: string) => (t === 'rule' ? 'Your rule' : t.charAt(0).toUpperCase() + t.slice(1))
 const routeShort = (x: { model: string | null; effort: string | null }) => (x.model || x.effort ? routeLabel(x) : 'keep')
 const modelWord = (id: string | null) => Object.keys(MODELS).find(k => (MODELS as Record<string, string>)[k] === id)
@@ -276,6 +375,7 @@ export const register: Register = (on, options) => {
     workCalls = 0
     isPlanTouched = false
     isWaitingOnBackground = false
+    await update($, cache, x => ({ ...x, busy: true }))
 
     return next(e)
   })
@@ -285,6 +385,8 @@ export const register: Register = (on, options) => {
     // the desktop app sends typed prompts as sdk, not composer; machine origins (notifications, peers) are left alone
     if (!['composer', 'bridge', 'sdk', 'unclassified'].includes(e.origin.kind)) return next(e)
     const r = await read($, router)
+    // your prompt ends the pause: automatic pings get their budget back
+    if ((await read($, cache)).pings > 0) await update($, cache, x => ({ ...x, pings: 0 }))
     let text = e.text
     if (r.mode === 'auto' && !e.text.trimStart().startsWith('/')) {
       const c = classify(e.text, { prevTask: r.pending?.task ?? r.current?.task ?? null, prevRoute: r.current?.wanted ?? null, words: projectWords, rules: r.rules, top: r.top })
@@ -300,7 +402,8 @@ export const register: Register = (on, options) => {
 
   // decides the route once per turn (first request), then every request of the main loop runs on it; subagents are untouched
   on('turn.step', async function* ($, e, next) {
-    if (e.agentId) return yield* next(e)
+    // a keep-warm ping sent while nothing runs is no request of the conversation, should the engine raise one for it
+    if (e.agentId || (isPinging && !(await read($, cache)).busy)) return yield* next(e)
     if (e.index === 0) {
       const r = await read($, router)
       const seen = { model: e.model, effort: e.effort === undefined ? null : String(e.effort) }
@@ -320,6 +423,7 @@ export const register: Register = (on, options) => {
           wanted = routeFor('normal', r.routes)
         }
         const now = await $.clock.now()
+        const c = await read($, cache)
         const g = guard({
           wanted,
           ran: r.ran,
@@ -327,10 +431,11 @@ export const register: Register = (on, options) => {
           sessionEffort: seen.effort,
           home: r.routes.normal ?? null,
           ctxTokens: (await $.session.usage()).context.tokens ?? 0,
-          idleMs: r.lastEnd ? now - r.lastEnd : 0,
+          // the cache meter knows when the entry was last touched and how long it lives
+          idleMs: c.at ? now - c.at : 0,
           strong: strong || !r.saver,
           freeBelow: FREE_BELOW,
-          ttlMs: CACHE_TTL_MS,
+          ttlMs: c.until - c.at,
         })
         const current: Route = { task, model: g.model, effort: g.effort, reason, held: g.held, wanted }
         const switched = r.ran !== null && (r.ran.model !== g.model || r.ran.effort !== g.effort)
@@ -338,10 +443,18 @@ export const register: Register = (on, options) => {
       }
     }
     const route = (await read($, router)).current
-    if (!route || (route.model === e.model && route.effort === (e.effort === undefined ? null : String(e.effort)))) return yield* next(e)
-    const { effort: _drop, ...rest } = e
+    let sent = e
+    if (route && !(route.model === e.model && route.effort === (e.effort === undefined ? null : String(e.effort)))) {
+      const { effort: _drop, ...rest } = e
+      sent = route.effort ? { ...rest, model: route.model, effort: route.effort as typeof e.effort } : { ...rest, model: route.model }
+    }
+    // the cache's lifetime counts from the start of the request that read or wrote it
+    const startedAt = await $.clock.now()
+    const result = yield* next(sent)
+    const u = result.usage
+    if (u) await sawRequest($, { at: startedAt, model: u.model || sent.model, read: u.cache_read_input_tokens, write: u.cache_creation_input_tokens, fresh: u.input_tokens, ping: false }).catch(() => undefined)
 
-    return yield* next(route.effort ? { ...rest, model: route.model, effort: route.effort as typeof e.effort } : { ...rest, model: route.model })
+    return result
   })
 
   // counts the main loop's edits (so a side question does not touch the bars); never adds anything to the context
@@ -430,19 +543,62 @@ export const register: Register = (on, options) => {
         },
       },
     })
+    const unset = () => undefined
+    ttlEnv = {
+      force5m: await $.env.get('FORCE_PROMPT_CACHING_5M').catch(unset),
+      ttlVar: await $.env.get('CLAUDE_CODE_PROMPT_CACHE_TTL').catch(unset),
+      enable1h: await $.env.get('ENABLE_PROMPT_CACHING_1H').catch(unset),
+    }
+    // the promptCacheTtl setting: the project's local file, the project's, then yours
+    ttlSetting = undefined
+    for (const file of ['.claude/settings.local.json', '.claude/settings.json', settingsPath($)?.replace(/cockpit\.json$/, 'settings.json')]) {
+      if (file && !asTtl(ttlSetting)) ttlSetting = ((await readJson($, file)) as { promptCacheTtl?: unknown }).promptCacheTtl
+    }
+    const pingSeen = asTtl(await $.store.get('pingTtl')) as Ttl | null
+    await update($, cache, x => ({ ...x, pingSeen: x.pingSeen ?? pingSeen }))
     await loadRoutes($)
+    await setAccount($, (await $.session.usage()).rateLimits).catch(unset)
     // a session reopened later (an app restart, a resume) finds its bars where it left them
     if ((await read($, plans)).length === 0) await restorePlans($)
     $.clock.every(1000, async () => {
       const list = await read($, plans)
       for (const id of lastHead.keys()) if (!list.some(p => p.id === id)) lastHead.delete(id)
       if (list !== lastSaved) await savePlans($, list)
+      await watchCache($)
     })
     await $.command.register({ name: 'progress', description: 'Show or hide the progress bars' })
     await $.command.register({ name: 'progress-demo', description: 'Show a sample plan in the progress bars' })
     await $.command.register({ name: 'progress-sounds', description: 'Play the decision, error and done sounds' })
     await $.command.register({ name: 'progress-clear', description: 'Remove all progress bars' })
     await $.command.register({ name: 'route', description: 'Choose a model and effort for quick, normal and hard prompts' })
+    await $.command.register({ name: 'cache', description: 'Prompt cache: time left before it expires, keep it warm' })
+
+    return next(e)
+  })
+
+  // the plan windows arrive with the first reply and move with every one after
+  on('session.measure', async ($, e, next) => {
+    await setAccount($, e.rateLimits)
+
+    return next(e)
+  })
+
+  // /clear and /compact start a new prefix, so the old entry is no longer the conversation's. A resumed session says
+  // whether Claude Code itself counts the cache as gone: with the last reply 5 to 60 minutes back, that names the lifetime
+  on('classic.SessionStart', async ($, e, next) => {
+    const gap = (e.seconds_since_last_response ?? 0) * 1000
+    if (e.source === 'clear' || e.source === 'compact') await update($, cache, x => ({ ...x, at: 0, until: 0, pings: 0, why: null }))
+    else if (e.prompt_cache_likely_expired !== undefined && gap > TTL_MS['5m'] && gap < TTL_MS['1h']) {
+      const seen: Ttl = e.prompt_cache_likely_expired ? '5m' : '1h'
+      await update($, cache, x => ({ ...x, seen }))
+    }
+
+    return next(e)
+  })
+
+  // a /model switch reports the lifetime the engine itself uses
+  on('classic.PostModelSwitch', async ($, e, next) => {
+    await update($, cache, x => onLife({ ...x, seen: e.cache_ttl }, x.pin ?? e.cache_ttl))
 
     return next(e)
   })
@@ -586,6 +742,41 @@ export const register: Register = (on, options) => {
             '/route stats                 tokens and cache hits per model',
             '/route on | off | clear',
             'One prompt only: start it with @hard, @opus, @max and so on (stripped before sending).',
+          ].join('\n'),
+        }
+    }
+  })
+
+  on('command.run', { command: 'cache' }, async ($, e) => {
+    const [sub = '', arg = ''] = e.args.trim().toLowerCase().split(/\s+/)
+
+    switch (sub) {
+      case '':
+        return { text: report(await read($, cache), await $.clock.now()) }
+      case 'warm':
+        return { text: await keepWarm($) }
+      case 'on':
+      case 'off':
+        await setCache($, { show: sub === 'on' })
+        return { text: sub === 'on' ? 'Cache row on.' : 'Cache row off: no row, no warning, no keep-warm pings.' }
+      case 'auto': {
+        const n = arg === 'off' ? 0 : Number.parseInt(arg, 10)
+        if (!(n >= 0 && n <= MAX_AUTO)) return { text: `Example: /cache auto 2 (0 to ${MAX_AUTO} pings Cockpit may send by itself in one pause), /cache auto off` }
+        await setCache($, { auto: n })
+        return { text: n ? `Up to ${plural(n, 'keep-warm ping')} per pause. Each one reads the conversation from the cache, at a tenth of the input price or less.` : 'Automatic keep-warm off. The button and /cache warm still work.' }
+      }
+      case 'ttl':
+        if (arg !== 'auto' && !asTtl(arg)) return { text: 'Example: /cache ttl 1h, /cache ttl 5m, or /cache ttl auto to let Cockpit work it out' }
+        await setCache($, { ttl: asTtl(arg) ?? undefined })
+        return { text: arg === 'auto' ? 'Cache lifetime worked out from your account and the traffic.' : `Cache lifetime set to ${arg}.` }
+      default:
+        return {
+          text: [
+            '/cache                 lifetime, last request, time left',
+            '/cache warm            keep the cache warm now: one cheap read of the conversation',
+            '/cache auto 2 | off    pings Cockpit may send by itself in one pause',
+            '/cache ttl 5m | 1h | auto    set the lifetime yourself',
+            '/cache on | off        the row above the prompt, its warning and its pings',
           ].join('\n'),
         }
     }
@@ -742,8 +933,14 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const list = await read($, plans)
-    if (list.length === 0 || e.props.hasSurvey || !(await read($, isOpen))) return next(e)
+    const list = (await read($, isOpen)) ? await read($, plans) : []
+    const c = await read($, cache)
+    const now = await $.clock.now()
+    const state = phase(c, now) as 'none' | MeterLook
+    // under FREE_BELOW tokens a lapsed cache costs too little to take a row
+    const hasMeter = c.show && state !== 'none' && c.tokens >= FREE_BELOW
+    if ((list.length === 0 && !hasMeter) || e.props.hasSurvey) return next(e)
+    const meterTitle = state === 'cold' ? `Cache expired · next prompt re-reads ${k(c.tokens)}` : `Prompt cache · ${k(c.tokens)}${c.why && state !== 'live' ? ` · missed: ${c.why}` : ''}`
     const t = $.ui.resolve(e)
     const { Box, Button, Text } = t
     const Svg = 'Svg' in t ? t.Svg : null
@@ -751,9 +948,52 @@ export const register: Register = (on, options) => {
     // every bar has the same width and is pinned to the right edge (fixed-width percent, close button),
     // so rows line up whatever their titles; the slack goes into the gap after the title.
     // Desktop reports ~8 CSS px per column; glyph, gaps, percent and the close button take ~126 px.
-    const titleWidth = Math.min(Math.round(total * 0.3), Math.max(...list.map(p => Math.round(textWidth(p.title, 6.4)))))
-    const trackW = Math.max(120, Math.min(1400, total - titleWidth - 140))
-    const now = await $.clock.now()
+    const titleWidth = Math.min(Math.round(total * 0.3), Math.max(...[...list.map(p => p.title), ...(hasMeter ? [meterTitle] : [])].map(s => Math.round(textWidth(s, 6.4)))))
+    // the cache row shares every width with the bars, so the tracks line up; the Keep warm button takes ~96 px of the title's side
+    const trackW = Math.max(120, Math.min(1400, total - titleWidth - 140 - (hasMeter ? 96 : 0)))
+
+    // the cache row is a bar like the others: glyph, title, a pill track whose fill drains by itself, the time left,
+    // a close button. Its drawing starts from the time left now, so nothing is redrawn each second
+    const meter = () => {
+      const left = leftMs(c, now)
+      const life = TTL_MS[c.life]
+      const color = METER_COLOR[state as MeterLook]
+      const canWarm = state === 'low' || state === 'soon'
+      const filled = state === 'live' ? 25 : Math.round(Math.min(1, left / life) * 25)
+      const pct = state === 'live' ? 100 : Math.round(Math.min(1, left / life) * 100)
+      const timeLeft = state === 'live' ? 'live' : leftLabel(left)
+
+      return (
+        <Box key="cache-row" flexDirection="row" alignItems="center" gap={1}>
+          <Text color={color}>{STATE_GLYPH[METER_STATE[state as MeterLook]]}</Text>
+          <Text wrap="truncate">{meterTitle}</Text>
+          {canWarm ? <Button key="cache-warm" label="Keep warm" onPress={async () => $.ui.toast(await keepWarm($))} /> : null}
+          <Box flexGrow={1} />
+          {Svg ? (
+            <Box key="cache-track" flexShrink={0}>
+              <Svg source={meterSvg(trackW, state as MeterLook, left, life)} alt={`Prompt cache: ${state === 'live' ? 'in use' : state === 'cold' ? 'expired' : `${timeLeft} left, ${pct}%`}`} width={trackW} height={TRACK_H} />
+            </Box>
+          ) : (
+            <Text>
+              <Text color={color}>{'━'.repeat(filled)}</Text>
+              <Text dimColor>{'─'.repeat(25 - filled)}</Text>
+              <Text color={color}>{` ${timeLeft}`}</Text>
+            </Text>
+          )}
+          <Text dimColor>{`${String(pct).padStart(3, FIGURE_SPACE)}%`}</Text>
+          <Button
+            key="cache-close"
+            plain
+            dimColor
+            label="✕"
+            onPress={async () => {
+              await setCache($, { show: false })
+              $.ui.toast('Cache row off. /cache on brings it back.')
+            }}
+          />
+        </Box>
+      )
+    }
 
     return (
       <Box flexDirection="column" gap={1}>
@@ -795,6 +1035,7 @@ export const register: Register = (on, options) => {
             </Box>
           )
         })}
+        {hasMeter ? meter() : null}
       </Box>
     )
   })
@@ -805,9 +1046,9 @@ export const register: Register = (on, options) => {
       const now = await $.clock.now()
       const r = await read($, router)
       const c = r.mode === 'off' ? null : r.current
+      await update($, cache, x => ({ ...x, busy: false }))
       await update($, router, x => ({
         ...x,
-        lastEnd: now,
         switched: false,
         stats: c ? addTurn(x.stats, `${shortModel(c.model)}${c.effort ? ` · ${c.effort}` : ''}`, e.usage, x.switched) : x.stats,
       }))

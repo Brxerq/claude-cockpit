@@ -222,7 +222,7 @@ export function addTurn(stats, key, usage, switched) {
   }
 }
 
-const k = n => (n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
+export const k = n => (n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
 
 export function formatStats(stats, costUsd) {
   if (!stats.turns) return 'No routed replies yet.'

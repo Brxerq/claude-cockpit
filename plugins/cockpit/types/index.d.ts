@@ -42,11 +42,45 @@ export type Router = {
   ran: Spec | null
   // the model and effort the engine had before the router touched them
   seen: Spec | null
-  // when the last main turn ended, to tell whether the prompt cache has expired
-  lastEnd: number
   // the route changed at this turn's start
   switched: boolean
   stats: Stats
+}
+
+// how long a prompt-cache entry lives after the last request that read or wrote it
+export type Ttl = '5m' | '1h'
+// the prompt-cache entry the main conversation last touched, and what the meter may do about it
+export type Cache = {
+  // the row, its warning and the keep-warm pings are on
+  show: boolean
+  // keep-warm pings Cockpit may send by itself in one pause; 0: only when you ask
+  auto: number
+  // your own lifetime choice; null: worked out
+  pin: Ttl | null
+  // the lifetime Claude Code's rules give this account, and which rule said so
+  ttl: Ttl
+  source: string
+  // what the traffic proved about the conversation's requests, and about keep-warm pings; null: nothing yet
+  seen: Ttl | null
+  pingSeen: Ttl | null
+  // the last request that read or wrote the cache: when it started (0: none), when its entry lapses, and the
+  // lifetime the meter is scaled to
+  at: number
+  until: number
+  life: Ttl
+  // that request's prompt size, the parts the cache served and wrote, and its model
+  tokens: number
+  read: number
+  write: number
+  model: string
+  // the entry was last renewed by a keep-warm ping
+  viaPing: boolean
+  // pings sent since your last prompt
+  pings: number
+  // a reply is running: every request renews the cache
+  busy: boolean
+  // why the last request missed the cache; null: it did not
+  why: string | null
 }
 
 declare module 'claude-code' {
@@ -55,6 +89,9 @@ declare module 'claude-code' {
       plans: Plan[]
       isOpen: boolean
       router: Router
+      // the model and effort the panel's "add a rule" dropdowns hold
+      ruleDraft: { model: string; effort: string }
+      cache: Cache
     }
   }
 }
