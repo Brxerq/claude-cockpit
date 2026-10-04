@@ -121,3 +121,16 @@ test('a Claude subscription counts on the hour', async ($, on) => {
   const said = await $.command.run({ command: 'cache', args: '' } as never)
   expect((said as { text: string }).text).toMatch(/Cache lifetime: 1h \(Claude subscription\)/)
 })
+
+test('on a 1-hour cache one ping is sent per pause, not a chain of them', async ($, on) => {
+  const w: World = { toasts: [], forks: 0, windows: [{ kind: 'five_hour', percentUsed: 12 }] }
+  const clock = world(on, w, { cache: { auto: 4 } })
+  await start($)
+  await request($)
+
+  await clock.advance(58 * MIN)
+  expect(w.forks).toBe(1)
+  // minutes later nothing more goes out: the ping has not been shown to buy the hour
+  await clock.advance(30 * MIN)
+  expect(w.forks).toBe(1)
+})

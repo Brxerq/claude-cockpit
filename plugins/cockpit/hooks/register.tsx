@@ -350,7 +350,12 @@ async function watchCache($: EngineInterface) {
   warnedAt = c.at
   // a plan window almost used up is not spent on pings
   const isNearLimit = (await $.session.usage()).rateLimits.some(w => w.percentUsed >= 95)
-  if (c.pings < c.auto && !isNearLimit) {
+  // On a 1-hour entry a ping counts as 5 minutes until a later reply proves it bought the hour, so until then the
+  // entry's end does not move and a second ping would only repeat the first. A wasted ping is one that was shown to
+  // buy nothing, or that would repeat a first ping nothing has vouched for yet
+  const isWasted = c.life === '1h' && (c.pingSeen === '5m' || (c.viaPing && c.pingSeen !== '1h'))
+  if (c.viaPing && isWasted) return
+  if (c.pings < c.auto && !isNearLimit && !isWasted) {
     $.ui.toast(await keepWarm($))
     return
   }
