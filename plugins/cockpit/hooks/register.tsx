@@ -614,6 +614,10 @@ export const register: Register = (on, options) => {
     return { sections: [...result.sections, { id: 'cockpit:rules', text: RULES, scope: 'session' as const }] }
   })
 
+  // a plugin's tool is listed behind ToolSearch by default, and a model with nothing to look up never loads it, so the
+  // rule in the prompt could not be followed; the schema is small and sits in the cached prefix
+  on('tool.describe', { tool: TOOL }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
+
   on('tool.call', { tool: TOOL }, async ($, e) => {
     const raw = e as unknown as Raw
     const now = await $.clock.now()

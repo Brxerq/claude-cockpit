@@ -1,6 +1,6 @@
 {
   "name": "cockpit",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Progress bars from your todo list at zero extra tokens, a router where you pick the model and effort for quick, normal and hard prompts, and a prompt-cache meter that can keep the cache warm",
   "author": {
     "name": "Syed Muhammad Hassaan",
