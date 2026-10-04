@@ -1,6 +1,6 @@
 // node hooks/cache.test.mjs
 import assert from 'node:assert/strict'
-import { accountOf, decideTtl, emptyCache, leftLabel, leftMs, missReason, observe, phase, report, touch, TTL_MS } from './cache.mjs'
+import { accountOf, decideTtl, emptyCache, isStuck, leftLabel, leftMs, missReason, observe, phase, report, touch, TTL_MS } from './cache.mjs'
 
 const MIN = 60000
 const O = 'claude-opus-5-5'
@@ -97,5 +97,12 @@ assert.equal(leftLabel(0), 'cold')
 
 assert.match(report(c, T + 20 * MIN), /Cache lifetime: 1h[\s\S]*99% read[\s\S]*Warm for 50m/)
 assert.match(report(c, T + 80 * MIN), /re-reads 82k tokens/)
+
+// a reply marked running whose entry has lapsed is stuck (an interrupted turn); a live one is not
+assert.equal(isStuck({ ...c, busy: true }, T + 70 * MIN), true)
+assert.equal(isStuck({ ...c, busy: true }, T + 20 * MIN), false)
+assert.equal(isStuck({ ...c, busy: false }, T + 70 * MIN), false)
+assert.equal(isStuck({ ...emptyCache(), busy: true }, 5), false)
+assert.equal(emptyCache().hidden, false)
 
 console.log('cache ok')

@@ -85,6 +85,31 @@ test('a request starts the countdown; one warning comes before the end; the butt
   expect(w.forks).toBe(1)
 })
 
+test('the ✕ hides the row for this session and saves nothing; /cache on brings it back', async ($, on) => {
+  const w: World = { toasts: [], forks: 0 }
+  let written = 0
+  world(on, w)
+  on('fs.write', () => {
+    written += 1
+    return { value: undefined } as never
+  })
+  await start($)
+  await request($)
+
+  const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'terminal', ...(BAND as object) } as never)
+  expect(await ui.find({ key: 'cache-row' })).toBeDefined()
+  await ui.press({ key: 'cache-close' })
+  await ui.unmount()
+  expect(written).toBe(0)
+  // the plugin draws nothing now, so the band is left to the engine, which this test does not stand in for
+  await expect($.ui.mount({ plugin: 'cockpit', surface: 'terminal', ...(BAND as object) } as never)).rejects.toThrow(/no implementation for ui.render/)
+
+  await $.command.run({ command: 'cache', args: 'on' } as never)
+  const back = await $.ui.mount({ plugin: 'cockpit', surface: 'terminal', ...(BAND as object) } as never)
+  expect(await back.find({ key: 'cache-row' })).toBeDefined()
+  await back.unmount()
+})
+
 test('with automatic pings allowed, Cockpit keeps the cache warm by itself, up to the limit', async ($, on) => {
   const w: World = { toasts: [], forks: 0 }
   const clock = world(on, w, { cache: { auto: 2 } })
@@ -122,7 +147,8 @@ test('a Claude subscription counts on the hour', async ($, on) => {
   expect((said as { text: string }).text).toMatch(/Cache lifetime: 1h \(Claude subscription\)/)
 })
 
-test('on a 1-hour cache one ping is sent per pause, not a chain of them', async ($, on) => {
+// 88 simulated minutes of one-second ticks: close to the default 5 s on a busy machine
+test('on a 1-hour cache one ping is sent per pause, not a chain of them', { timeoutMs: 30_000 }, async ($, on) => {
   const w: World = { toasts: [], forks: 0, windows: [{ kind: 'five_hour', percentUsed: 12 }] }
   const clock = world(on, w, { cache: { auto: 4 } })
   await start($)

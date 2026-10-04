@@ -79,6 +79,8 @@ export type Cache = {
   pings: number
   // a reply is running: every request renews the cache
   busy: boolean
+  // the ✕ on the row: hidden until /cache on, for this session only (show is the saved choice)
+  hidden: boolean
   // why the last request missed the cache; null: it did not
   why: string | null
 }

@@ -127,7 +127,7 @@ Claude Code caches your conversation on the API side, so each reply re-reads it 
 
 Once a conversation passes 30k tokens, a row above the prompt shows where the cache stands:
 
-- A bar drawn like the progress bars (same pixel fill, same pill, same colours) that drains as the cache runs out. The pill names the state: **Warm** (green), **Cooling** (amber, under 40% left), **Expiring** (red, the last minute, or the last 5 minutes of the 1-hour cache), **Expired**, and **In use** (violet) while a reply runs and renews it. The percent beside it is the share of the lifetime left, and the ✕ turns the row off.
+- A bar drawn like the progress bars (same pixel fill, same pill, same colours) that drains as the cache runs out. The pill names the state: **Warm** (green), **Cooling** (amber, under 40% left), **Expiring** (red, the last minute, or the last 5 minutes of the 1-hour cache), **Expired**, and **In use** (violet) while a reply runs and renews it. The percent beside it is the share of the lifetime left, and the ✕ hides the row for this session (`/cache on` brings it back; `/cache off` turns it off for good).
 - One toast and a sound when it is about to expire, with what the next prompt would cost. Not a countdown of toasts.
 - A **Keep warm** button once the cache is past 60% of its life. It sends one tiny side request that reads the conversation from the cache, which renews it. Nothing is added to your conversation.
 - When the cache has expired, the row says how many tokens the next prompt re-reads, so you can `/clear` first if the task is done.
@@ -163,8 +163,8 @@ Commands: `/progress` (hide or show), `/progress-demo`, `/progress-sounds`, `/pr
 
 ## Good to know
 
-- Cockpit is early (0.7.1). Please open an issue when something looks off.
-- The keyword rules are English. Add your own words with `/route word` or the project file.
+- Cockpit is early (0.7.3). Please open an issue when something looks off.
+- The keyword rules are English. Add your own words with `/route rule` or the project file.
 - Your choices are saved for every project; `/route off` resets when the app restarts.
 - `.claude/cockpit.json` is read when a session starts and whenever you change a choice.
 

@@ -16,7 +16,7 @@ const SLACK_MS = 10000
 export const asTtl = v => (v === '5m' || v === '1h' ? v : null)
 
 // at 0: no entry. until: when the entry lapses. life: the lifetime the meter is scaled to
-export const emptyCache = () => ({ show: true, auto: 0, pin: null, ttl: '5m', source: 'no plan window seen yet', seen: null, pingSeen: null, at: 0, until: 0, life: '5m', tokens: 0, read: 0, write: 0, model: '', viaPing: false, pings: 0, busy: false, why: null })
+export const emptyCache = () => ({ show: true, auto: 0, pin: null, ttl: '5m', source: 'no plan window seen yet', seen: null, pingSeen: null, at: 0, until: 0, life: '5m', tokens: 0, read: 0, write: 0, model: '', viaPing: false, pings: 0, busy: false, hidden: false, why: null })
 
 // ---------- which lifetime the account gets ----------
 
@@ -87,6 +87,10 @@ export function touch(c, s) {
 }
 
 // ---------- reading the state ----------
+
+// a reply is marked running, yet the entry has lapsed: the turn ended without telling us (an interrupt), or one tool ran
+// past the lifetime. Either way "live" no longer holds
+export const isStuck = (c, now) => c.busy && c.at > 0 && c.until <= now
 
 export const leftMs = (c, now) => (c.at ? Math.max(0, c.until - now) : 0)
 

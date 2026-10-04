@@ -6,7 +6,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Cache, Plan, PlanStage, PlanState, Route, Router, Rule, Spec, StepStatus, Ttl } from '../types'
 // @ts-ignore plain JS, as the router is
-import { accountOf, asTtl, decideTtl, emptyCache, leftLabel, leftMs, phase, report, touch, TTL_MS, WARN_MS } from './cache.mjs'
+import { accountOf, asTtl, decideTtl, emptyCache, isStuck, leftLabel, leftMs, phase, report, touch, TTL_MS, WARN_MS } from './cache.mjs'
 import { elapsed, lastHead, METER_COLOR, METER_STATE, meterSvg, plural, STATE_COLOR, STATE_GLYPH, textWidth, trackSvg, TRACK_H } from './draw.ts'
 import type { MeterLook } from './draw.ts'
 import { carryDone, DEMO, isFinished, normalize, parsePlan, PLAN_ID, pointAt, slug, str, where } from './plan.ts'
@@ -27,7 +27,7 @@ const cache = atom({ plugin: 'cockpit', key: 'cache' } as const, emptyCache() as
 
 // this text sits in the cached system prompt (about 40 tokens), so it stays short and never changes within a session
 const RULES = `# Cockpit
-If you have a todo tool (TodoWrite, TaskCreate), its list shows as a progress bar. If you have none, for any task of 3+ steps create a bar with ${TOOL} and move it once per stage. Never mention the bars.`
+If you have a todo tool (TodoWrite, TaskCreate), its list shows as a progress bar. If you have none, before the first tool call of any task of 3+ steps create a bar with ${TOOL}, then move it once per stage. Never mention the bars.`
 
 // ---------- sound, bars, saving ----------
 
@@ -205,6 +205,21 @@ async function readJson($: EngineInterface, path: string): Promise<Settings> {
   }
 }
 
+async function isBroken($: EngineInterface, path: string): Promise<boolean> {
+  let text: string
+  try {
+    text = await $.fs.read(path)
+  } catch {
+    return false
+  }
+  try {
+    JSON.parse(text)
+    return false
+  } catch {
+    return text.trim() !== ''
+  }
+}
+
 async function readSettings($: EngineInterface): Promise<Settings> {
   const path = settingsPath($)
   return path ? readJson($, path) : (((await $.store.get('settings')) ?? {}) as Settings)
@@ -212,6 +227,11 @@ async function readSettings($: EngineInterface): Promise<Settings> {
 
 async function writeSettings($: EngineInterface, s: Settings) {
   const path = settingsPath($)
+  // a file that exists but does not parse reads as empty, and saving over it would erase what you wrote by hand
+  if (path && (await isBroken($, path))) {
+    $.ui.toast(`${path} is not valid JSON, so nothing was saved. Fix or delete it.`, { timeoutMs: 15000 })
+    return
+  }
   if (path) await $.fs.write(path, `${JSON.stringify(s, null, 2)}\n`)
   else await $.store.set('settings', s)
   await loadRoutes($)
@@ -263,7 +283,9 @@ async function setOption($: EngineInterface, patch: Settings) {
 }
 
 async function clearRoutes($: EngineInterface) {
-  await writeSettings($, {})
+  // the cache row's choices are not router choices
+  const { cache: kept } = await readSettings($)
+  await writeSettings($, kept ? { cache: kept } : {})
 }
 
 async function openPanel($: EngineInterface) {
@@ -339,8 +361,13 @@ async function keepWarm($: EngineInterface): Promise<string> {
 // keep-warm ping if you allowed them, else one toast and a sound
 async function watchCache($: EngineInterface) {
   const c = await read($, cache)
-  if (!c.show || !c.at) return
-  const left = leftMs(c, await $.clock.now())
+  if (!c.show || c.hidden || !c.at) return
+  const now = await $.clock.now()
+  if (isStuck(c, now)) {
+    await update($, cache, x => ({ ...x, busy: false }))
+    return
+  }
+  const left = leftMs(c, now)
   const text = c.busy ? 'live' : leftLabel(left)
   if (text !== meterText) {
     meterText = text
@@ -518,6 +545,8 @@ export const register: Register = (on, options) => {
   // a turn that ends with a bar still open costs nothing: the bar turns amber by itself, no model call to ask why
   on('classic.Stop', async ($, e, next) => {
     const result = await next(e)
+    // the reply is over, whatever turn.complete did or did not say; a blocked stop means it carries on
+    if (!result.block) await update($, cache, x => (x.busy ? { ...x, busy: false } : x))
     if (e.stop_hook_active || result.block || isWaitingOnBackground || (e.background_tasks?.length ?? 0) > 0) return result
     const asks = /\?\s*$/.test(e.last_assistant_message ?? '')
     // a turn that did no work on the plan (a side question) leaves the bar alone, so it does not chime every turn
@@ -529,6 +558,8 @@ export const register: Register = (on, options) => {
   })
 
   on('session.start', async ($, e, next) => {
+    const unset = () => undefined
+    // one failing step must not stop the ones after it: the clock below is what runs the cache row
     await $.tool.register({
       name: 'plan_progress',
       description: 'Progress bar above the prompt. Create with id, title, stages; update with next, done, active, failed or state.',
@@ -547,8 +578,7 @@ export const register: Register = (on, options) => {
           note: { type: 'string' },
         },
       },
-    })
-    const unset = () => undefined
+    }).catch(unset)
     ttlEnv = {
       force5m: await $.env.get('FORCE_PROMPT_CACHING_5M').catch(unset),
       ttlVar: await $.env.get('CLAUDE_CODE_PROMPT_CACHE_TTL').catch(unset),
@@ -559,12 +589,12 @@ export const register: Register = (on, options) => {
     for (const file of ['.claude/settings.local.json', '.claude/settings.json', settingsPath($)?.replace(/cockpit\.json$/, 'settings.json')]) {
       if (file && !asTtl(ttlSetting)) ttlSetting = ((await readJson($, file)) as { promptCacheTtl?: unknown }).promptCacheTtl
     }
-    const pingSeen = asTtl(await $.store.get('pingTtl')) as Ttl | null
+    const pingSeen = asTtl(await $.store.get('pingTtl').catch(unset)) as Ttl | null
     await update($, cache, x => ({ ...x, pingSeen: x.pingSeen ?? pingSeen }))
-    await loadRoutes($)
+    await loadRoutes($).catch(unset)
     await setAccount($, (await $.session.usage()).rateLimits).catch(unset)
     // a session reopened later (an app restart, a resume) finds its bars where it left them
-    if ((await read($, plans)).length === 0) await restorePlans($)
+    if ((await read($, plans)).length === 0) await restorePlans($).catch(unset)
     $.clock.every(1000, async () => {
       const list = await read($, plans)
       for (const id of lastHead.keys()) if (!list.some(p => p.id === id)) lastHead.delete(id)
@@ -766,6 +796,7 @@ export const register: Register = (on, options) => {
         return { text: await keepWarm($) }
       case 'on':
       case 'off':
+        await update($, cache, x => ({ ...x, hidden: false }))
         await setCache($, { show: sub === 'on' })
         return { text: sub === 'on' ? 'Cache row on.' : 'Cache row off: no row, no warning, no keep-warm pings.' }
       case 'auto': {
@@ -947,7 +978,7 @@ export const register: Register = (on, options) => {
     const now = await $.clock.now()
     const state = phase(c, now) as 'none' | MeterLook
     // under FREE_BELOW tokens a lapsed cache costs too little to take a row
-    const hasMeter = c.show && state !== 'none' && c.tokens >= FREE_BELOW
+    const hasMeter = c.show && !c.hidden && state !== 'none' && c.tokens >= FREE_BELOW
     if ((list.length === 0 && !hasMeter) || e.props.hasSurvey) return next(e)
     const meterTitle = state === 'cold' ? `Cache expired · next prompt re-reads ${k(c.tokens)}` : `Prompt cache · ${k(c.tokens)}${c.why && state !== 'live' ? ` · missed: ${c.why}` : ''}`
     const t = $.ui.resolve(e)
@@ -996,8 +1027,8 @@ export const register: Register = (on, options) => {
             dimColor
             label="✕"
             onPress={async () => {
-              await setCache($, { show: false })
-              $.ui.toast('Cache row off. /cache on brings it back.')
+              await update($, cache, x => ({ ...x, hidden: true }))
+              $.ui.toast('Cache row hidden for this session. /cache on brings it back.')
             }}
           />
         </Box>
