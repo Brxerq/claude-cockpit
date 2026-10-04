@@ -27,7 +27,7 @@ const cache = atom({ plugin: 'cockpit', key: 'cache' } as const, emptyCache() as
 
 // this text sits in the cached system prompt (about 40 tokens), so it stays short and never changes within a session
 const RULES = `# Cockpit
-If you have a todo tool (TodoWrite, TaskCreate), its list shows as a progress bar. If you have none, before the first tool call of any task of 3+ steps create a bar with ${TOOL}, then move it once per stage. Never mention the bars.`
+If you have a todo tool (TodoWrite, TaskCreate), its list shows as a progress bar. If you have none, before the first tool call of any task of 3+ steps create a bar with ${TOOL}, then move it as each stage finishes, and finish it before your last reply. Never mention the bars.`
 
 // ---------- sound, bars, saving ----------
 
@@ -68,13 +68,13 @@ function chime($: EngineInterface, prev: PlanState | undefined, next: PlanState)
   if (next === 'done') play($, 'done')
 }
 
-async function putPlan($: EngineInterface, next: Plan) {
-  await editPlan($, next.id, () => next)
+async function putPlan($: EngineInterface, next: Plan, isQuiet = false) {
+  await editPlan($, next.id, () => next, isQuiet)
 }
 
 // builds a bar from the latest stored one inside update(), so back-to-back calls never work from a stale copy;
 // make returns a string to refuse, and the list stays as it was
-async function editPlan($: EngineInterface, id: string, make: (prev: Plan | null) => Plan | string): Promise<Plan | string> {
+async function editPlan($: EngineInterface, id: string, make: (prev: Plan | null) => Plan | string, isQuiet = false): Promise<Plan | string> {
   let prev: Plan | undefined
   let made = '' as Plan | string
   await update($, plans, list => {
@@ -83,7 +83,7 @@ async function editPlan($: EngineInterface, id: string, make: (prev: Plan | null
     return typeof made === 'string' ? [...list] : placeBar(list, made)
   })
   if (typeof made === 'string') return made
-  chime($, prev?.state, made.state)
+  if (!isQuiet) chime($, prev?.state, made.state)
   if (!prev) await update($, isOpen, () => true)
   return made
 }
@@ -549,10 +549,11 @@ export const register: Register = (on, options) => {
     if (!result.block) await update($, cache, x => (x.busy ? { ...x, busy: false } : x))
     if (e.stop_hook_active || result.block || isWaitingOnBackground || (e.background_tasks?.length ?? 0) > 0) return result
     const asks = /\?\s*$/.test(e.last_assistant_message ?? '')
-    // a turn that did no work on the plan (a side question) leaves the bar alone, so it does not chime every turn
-    if (!asks && workCalls === 0 && !isPlanTouched) return result
-    const note = asks ? 'Waiting for your answer' : 'Stopped with steps left'
-    for (const p of (await read($, plans)).filter(isOpenPlan)) await putPlan($, { ...p, state: 'needs_input', note })
+    // a turn that did no edits and did not touch the bar (a side question, a push) still stops the bar, so it never
+    // looks live while nothing runs; it does so without a sound, so it does not chime every turn
+    const isQuiet = !asks && workCalls === 0 && !isPlanTouched
+    const note = asks ? 'Waiting for your answer' : isQuiet ? 'Not updated this turn' : 'Stopped with steps left'
+    for (const p of (await read($, plans)).filter(isOpenPlan)) await putPlan($, { ...p, state: 'needs_input', note }, isQuiet)
 
     return result
   })
