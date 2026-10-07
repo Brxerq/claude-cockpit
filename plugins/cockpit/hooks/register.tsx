@@ -307,6 +307,9 @@ let ttlSetting: unknown
 let isPinging = false
 let meterText = ''
 let warnedAt = 0
+// the turn whose route is decided, and whether the engine's refusal of a route was already shown
+let decidedTurn = ''
+let hasToldKept = false
 
 // the entry the last request left, counted on another lifetime
 const onLife = (x: Cache, life: Ttl): Cache => (x.at && !x.viaPing ? { ...x, life, until: x.at + TTL_MS[life] } : x)
@@ -436,8 +439,14 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     // a keep-warm ping sent while nothing runs is no request of the conversation, should the engine raise one for it
     if (e.agentId || (isPinging && !(await read($, cache)).busy)) return yield* next(e)
-    if (e.index === 0) {
-      const r = await read($, router)
+    // the first request of a turn decides; so does any later one while the turn has no decision yet (a first request that failed)
+    if (e.index === 0 || e.turnId !== decidedTurn) {
+      let r = await read($, router)
+      // routes still empty: the first load missed the file, so read it again before deciding
+      if (r.mode === 'auto' && Object.values(r.routes).every(x => !x.model && !x.effort)) {
+        await loadRoutes($).catch(() => undefined)
+        r = await read($, router)
+      }
       const seen = { model: e.model, effort: e.effort === undefined ? null : String(e.effort) }
       if (r.mode === 'off') {
         await update($, router, x => ({ ...x, seen, current: null, ran: null, pending: null }))
@@ -462,7 +471,7 @@ export const register: Register = (on, options) => {
           sessionModel: e.model,
           sessionEffort: seen.effort,
           home: r.routes.normal ?? null,
-          ctxTokens: (await $.session.usage()).context.tokens ?? 0,
+          ctxTokens: await $.session.usage().then(u => u.context?.tokens ?? 0).catch(() => 0),
           // the cache meter knows when the entry was last touched and how long it lives
           idleMs: c.at ? now - c.at : 0,
           strong: strong || !r.saver,
@@ -473,6 +482,7 @@ export const register: Register = (on, options) => {
         const switched = r.ran !== null && (r.ran.model !== g.model || r.ran.effort !== g.effort)
         await update($, router, x => ({ ...x, seen, current, ran: { model: g.model, effort: g.effort }, pending: null, switched }))
       }
+      decidedTurn = e.turnId
     }
     const route = (await read($, router)).current
     let sent = e
@@ -484,6 +494,12 @@ export const register: Register = (on, options) => {
     const startedAt = await $.clock.now()
     const result = yield* next(sent)
     const u = result.usage
+    // the engine can refuse a model (policy); say so once instead of letting the router look like it works
+    const family = (m: string) => m.replace(/\[.*\]$/, '')
+    if (u?.model && sent !== e && !hasToldKept && !family(u.model).startsWith(family(sent.model)) && !family(sent.model).startsWith(family(u.model))) {
+      hasToldKept = true
+      $.ui.toast(`Router: the engine ran ${u.model}, not ${sent.model}. /route shows the last decision.`, { timeoutMs: 15000 })
+    }
     if (u) await sawRequest($, { at: startedAt, model: u.model || sent.model, read: u.cache_read_input_tokens, write: u.cache_creation_input_tokens, fresh: u.input_tokens, ping: false }).catch(() => undefined)
 
     return result

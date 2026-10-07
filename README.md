@@ -167,7 +167,7 @@ Commands: `/progress` (hide or show), `/progress-demo`, `/progress-sounds`, `/pr
 
 ## Good to know
 
-- Cockpit is early (0.7.4). Please open an issue when something looks off.
+- Cockpit is early (0.7.5). Please open an issue when something looks off.
 - The keyword rules are English. Add your own words with `/route rule` or the project file.
 - Your choices are saved for every project; `/route off` resets when the app restarts.
 - `.claude/cockpit.json` is read when a session starts and whenever you change a choice.
