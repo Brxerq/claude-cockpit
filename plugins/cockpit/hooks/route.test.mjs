@@ -46,7 +46,8 @@ assert.equal(specText(routes.quick), 'keep keep')
 assert.equal(shortModel('claude-haiku-4-5-20251001'), 'haiku 4.5')
 
 // --- effort limits
-assert.equal(clampEffort(MODELS.haiku, 'high'), null)
+assert.equal(clampEffort('claude-haiku-4-5', 'high'), null)
+assert.equal(clampEffort(MODELS.haiku, 'high'), 'high')
 assert.equal(clampEffort('claude-opus-4-5', 'max'), 'high')
 assert.equal(clampEffort(MODELS.sonnet, 'max'), 'max')
 

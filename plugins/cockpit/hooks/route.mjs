@@ -6,7 +6,7 @@
 // re-read the whole conversation at full price.
 
 export const MODELS = {
-  haiku: 'claude-haiku-4-5',
+  haiku: 'claude-haiku-5-5',
   sonnet: 'claude-sonnet-5-5',
   opus: 'claude-opus-5-5',
   fable: 'claude-fable-5-1',
@@ -27,7 +27,7 @@ export const isSetUp = routes => TASKS.some(t => routes?.[t]?.model || routes?.[
 
 const rank = e => EFFORTS.indexOf(e) // -1 for none
 // models that take no effort setting (it errors or is ignored)
-const NO_EFFORT = /haiku|claude-3|sonnet-4-5|sonnet-4-0|opus-4-1|opus-4-0/
+const NO_EFFORT = /haiku-4|claude-3|sonnet-4-5|sonnet-4-0|opus-4-1|opus-4-0/
 // Claude Code keeps the prompt cache when effort changes on these (docs: prompt caching, "Changing effort level")
 const EFFORT_KEEPS_CACHE = /^claude-(sonnet-5-5|opus-5-5|fable-5-1)/
 
