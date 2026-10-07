@@ -2,11 +2,14 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-function world(on: On, sent: string[]) {
+function world(on: On, sent: string[], state = { isUsageBroken: false }) {
   mock.clock(on, { now: 1_000_000_000_000 })
   mock.store(on, { settings: { routes: { normal: 'sonnet high' } } })
   mock.env(on, {})
-  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [] } }) as never)
+  on('session.usage', () => {
+    if (state.isUsageBroken) throw new Error('no usage yet')
+    return { value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [] } } as never
+  })
   on('prompt.submit', (_, e) => ({ text: e.text }) as never)
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
   on('session.id', () => ({ value: 's1' }) as never)
@@ -45,5 +48,16 @@ test('a turn whose first request carried no decision still gets its route on a l
   await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
   await $.prompt.submit({ text: 'Review the router code and explain how routes are decided.', origin: { kind: 'sdk' } } as never)
   await request($, 1)
+  expect(sent).toEqual(['claude-sonnet-5-5'])
+})
+
+test('a failing usage call does not keep the turn off its route', async ($, on) => {
+  const sent: string[] = []
+  const state = { isUsageBroken: false }
+  world(on, sent, state)
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+  await $.prompt.submit({ text: 'Review the router code and explain how routes are decided.', origin: { kind: 'sdk' } } as never)
+  state.isUsageBroken = true
+  await request($, 0)
   expect(sent).toEqual(['claude-sonnet-5-5'])
 })
