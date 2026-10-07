@@ -2,7 +2,7 @@
 
 **Instruments and controls for Claude Code: see where every task is, and choose which model and effort handles it.**
 
-![Cockpit progress bars above the prompt in the Claude desktop app: running, waiting for you, and done](docs/img/bars.png)
+![Cockpit above the prompt in the Claude desktop app: progress bars for a finished, a running and a waiting task, and the prompt-cache row beneath them](docs/img/bars.png)
 
 - **Progress**: live bars above your prompt. Claude's own todo list becomes a bar automatically, so tracking progress costs zero extra tokens.
 - **Router**: you pick a model and effort for quick, normal and hard prompts in a small panel, and every prompt runs on the one that fits.
@@ -48,7 +48,7 @@ Nothing is picked for you. Until you choose, every kind is set to **Keep**, whic
 
 ![The router panel: a model and effort dropdown for each kind of prompt, your rules, the still-broken ladder and the cache saver](docs/img/router.png)
 
-Type `/route` (or click **Set up router** in the footer). A panel opens with a Model and an Effort dropdown for each kind (Keep leaves your own setting). Your choice is saved for every project.
+Type `/route` (or click **Set up router** in the footer). A panel opens with a Model and an Effort dropdown for each kind (Keep leaves your own setting). Your choice is saved for every project. After a routed reply, the footer chip shows what it ran on, such as `opus 5.5 · medium`, and clicking it reopens the panel.
 
 Prefer typing? The same in one line each:
 
@@ -107,11 +107,14 @@ Everything is saved in one file, `~/.claude/cockpit.json`, which the panel and t
   ],
   "top": "fable",
   "saver": true,
-  "cache": { "show": true, "auto": 0 }
+  "words": { "quick": ["changelog"], "hard": ["race condition"] },
+  "cache": { "show": true, "auto": 0, "ttl": "1h" }
 }
 ```
 
-A project can add its own in `.claude/cockpit.json` (same shape; its routes win and its rules come first).
+`words` adds your own words to a kind: the three kinds still use their built-in words. `cache.ttl` pins the cache lifetime; leave it out to let Cockpit work it out.
+
+A project can add its own in `.claude/cockpit.json` (same shape; its routes win, its rules come first and its `words` replace yours for that kind).
 
 ### Protecting the prompt cache
 
@@ -155,6 +158,7 @@ Want it kept warm while you are away? `/cache auto 2` lets Cockpit send up to 2 
 - For long tasks with distinct phases, Claude can show named stages instead
 - A plan you approve in plan mode becomes a bar
 - Four states: running (violet), needs input (amber), error (red), done (green, with the total time)
+- A bar still running when Claude's turn ends turns amber by itself, with why: waiting for your answer, stopped with steps left, or not updated this turn
 - Hover the pill for the running time, hover a checkpoint for when it was reached
 - Soft sounds when Claude needs a decision, hits an error or finishes (turn them off in the settings)
 - Bars are saved per session and come back when you resume it
