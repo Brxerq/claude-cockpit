@@ -11,10 +11,10 @@ type World = { toasts: string[]; forks: number; windows?: { kind: string; percen
 
 // what sits beneath the plugin: a clock the test moves, a store in memory, and an API whose every request reads
 // 80k tokens from the cache
-function world(on: On, w: World, settings: object = {}) {
+function world(on: On, w: World, settings: object = {}, env: Record<string, string> = {}) {
   const clock = mock.clock(on, { now: T0 })
   mock.store(on, { settings })
-  mock.env(on, {})
+  mock.env(on, env)
   const usage = { input_tokens: 300, output_tokens: 2, cache_read_input_tokens: 80_000, cache_creation_input_tokens: 0 }
   on('session.usage', () => ({ value: { startedAt: T0, context: { window: 200_000 }, rateLimits: w.windows ?? [] } }) as never)
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
@@ -145,6 +145,21 @@ test('a Claude subscription counts on the hour', async ($, on) => {
   await ui.unmount()
   const said = await $.command.run({ command: 'cache', args: '' } as never)
   expect((said as { text: string }).text).toMatch(/Cache lifetime: 1h \(Claude subscription\)/)
+})
+
+// 50 simulated minutes of one-second ticks
+test('on a 1-hour cache that idle compaction will hit first, the warning comes before the compaction', { timeoutMs: 30_000 }, async ($, on) => {
+  const w: World = { toasts: [], forks: 0, windows: [{ kind: 'five_hour', percentUsed: 12 }] }
+  const clock = world(on, w, {}, { CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: '50_000' })
+  await start($)
+  await request($)
+
+  // compaction comes about 54 minutes in, so the warning is due 5 minutes before that, not at 55
+  await clock.advance(48 * MIN)
+  expect(w.toasts).toHaveLength(0)
+  await clock.advance(2 * MIN)
+  expect(w.toasts.filter(t => /compacts this conversation in/.test(t))).toHaveLength(1)
+  expect(w.toasts.filter(t => /Cache expires in/.test(t))).toHaveLength(0)
 })
 
 // 88 simulated minutes of one-second ticks: close to the default 5 s on a busy machine

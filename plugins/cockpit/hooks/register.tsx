@@ -6,7 +6,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Cache, Plan, PlanStage, PlanState, Route, Router, Rule, Spec, StepStatus, Ttl } from '../types'
 // @ts-ignore plain JS, as the router is
-import { accountOf, asTtl, decideTtl, emptyCache, isStuck, leftLabel, leftMs, phase, report, touch, TTL_MS, WARN_MS } from './cache.mjs'
+import { accountOf, asTtl, compactsFirst, decideTtl, emptyCache, IDLE_COMPACT_MIN, IDLE_COMPACT_MS, isStuck, leftLabel, leftMs, phase, report, touch, TTL_MS, warnMs } from './cache.mjs'
 import { elapsed, lastHead, METER_COLOR, METER_STATE, meterSvg, plural, STATE_COLOR, STATE_GLYPH, textWidth, trackSvg, TRACK_H } from './draw.ts'
 import type { MeterLook } from './draw.ts'
 import { carryDone, DEMO, isFinished, normalize, parsePlan, PLAN_ID, pointAt, slug, str, where } from './plan.ts'
@@ -304,6 +304,8 @@ const PING_MAX_OUT = 500
 // what Claude Code's own lifetime rules read, kept from session start
 let ttlEnv: { force5m?: string; ttlVar?: string; enable1h?: string } = {}
 let ttlSetting: unknown
+// the idle compaction minimum in tokens; null where Claude Code does not compact idle conversations
+let idleMin: number | null = null
 let isPinging = false
 let meterText = ''
 let warnedAt = 0
@@ -376,7 +378,7 @@ async function watchCache($: EngineInterface) {
     meterText = text
     $.ui.invalidate('ui.render')
   }
-  if (c.busy || c.tokens < FREE_BELOW || left <= 0 || left > WARN_MS[c.life] || warnedAt === c.at) return
+  if (c.busy || c.tokens < FREE_BELOW || left <= 0 || left > warnMs(c, idleMin) || warnedAt === c.at) return
   warnedAt = c.at
   // a plan window almost used up is not spent on pings
   const isNearLimit = (await $.session.usage()).rateLimits.some(w => w.percentUsed >= 95)
@@ -387,6 +389,11 @@ async function watchCache($: EngineInterface) {
   if (c.viaPing && isWasted) return
   if (c.pings < c.auto && !isNearLimit && !isWasted) {
     $.ui.toast(await keepWarm($))
+    return
+  }
+  if (compactsFirst(c, idleMin)) {
+    $.ui.toast(`Claude Code compacts this conversation in ${leftLabel(left - (TTL_MS['1h'] - IDLE_COMPACT_MS))} if it stays idle; the next prompt then starts from a summary. Send one before then to keep it whole.`, { timeoutMs: 15000 })
+    play($, 'decision')
     return
   }
   $.ui.toast(`Cache expires in ${leftLabel(left)}. After that the next prompt re-reads ${k(c.tokens)} tokens at full price. /cache warm keeps it.`, { timeoutMs: 15000 })
@@ -407,6 +414,8 @@ export const register: Register = (on, options) => {
   let isWaitingOnBackground = false
 
   on('turn.start', async ($, e, next) => {
+    // since 2.1.299 subagents' and teammates' turns arrive here too; they are not the conversation's turn
+    if (e.agentId) return next(e)
     workCalls = 0
     isPlanTouched = false
     isWaitingOnBackground = false
@@ -603,9 +612,16 @@ export const register: Register = (on, options) => {
     }
     // the promptCacheTtl setting: the project's local file, the project's, then yours
     ttlSetting = undefined
+    let idleSetting: unknown
     for (const file of ['.claude/settings.local.json', '.claude/settings.json', settingsPath($)?.replace(/cockpit\.json$/, 'settings.json')]) {
-      if (file && !asTtl(ttlSetting)) ttlSetting = ((await readJson($, file)) as { promptCacheTtl?: unknown }).promptCacheTtl
+      if (!file) continue
+      const s = (await readJson($, file)) as { promptCacheTtl?: unknown; idleCompaction?: unknown }
+      if (!asTtl(ttlSetting)) ttlSetting = s.promptCacheTtl
+      idleSetting ??= s.idleCompaction
     }
+    // idle compaction runs in the terminal only; the variable takes spellings like 64_000
+    const idleVar = Number(String((await $.env.get('CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS').catch(unset)) ?? '').replace(/_/g, ''))
+    idleMin = e.surface === 'terminal' && idleSetting !== false ? (idleVar > 0 ? idleVar : IDLE_COMPACT_MIN) : null
     const pingSeen = asTtl(await $.store.get('pingTtl').catch(unset)) as Ttl | null
     await update($, cache, x => ({ ...x, pingSeen: x.pingSeen ?? pingSeen }))
     await loadRoutes($).catch(unset)
@@ -993,7 +1009,7 @@ export const register: Register = (on, options) => {
     const list = (await read($, isOpen)) ? await read($, plans) : []
     const c = await read($, cache)
     const now = await $.clock.now()
-    const state = phase(c, now) as 'none' | MeterLook
+    const state = phase(c, now, idleMin) as 'none' | MeterLook
     // under FREE_BELOW tokens a lapsed cache costs too little to take a row
     const hasMeter = c.show && !c.hidden && state !== 'none' && c.tokens >= FREE_BELOW
     if ((list.length === 0 && !hasMeter) || e.props.hasSurvey) return next(e)

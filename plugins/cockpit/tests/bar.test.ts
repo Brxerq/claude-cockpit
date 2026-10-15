@@ -47,3 +47,18 @@ test('a turn that ends with the bar untouched turns it amber, without a sound', 
   expect(sounds.length).toBe(before)
   await ui.unmount()
 })
+
+test("a subagent's turn does not wipe the main turn's work", async ($, on) => {
+  const sounds: string[] = []
+  world(on, sounds)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
+  await $.turn.start({ turnId: 't1', text: 'build it' } as never)
+  await create($)
+  // since 2.1.299 a subagent's turn starts through the same hook, told apart by agentId
+  await $.turn.start({ turnId: 't2', agentId: 'a1', text: 'look around' } as never)
+  await ($ as any).classic.Stop({ stop_hook_active: false, last_assistant_message: 'Half done.' })
+
+  const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', ...(BAND as object) } as never)
+  expect(JSON.stringify(await ui.find({ type: 'Svg' }))).toMatch(/Stopped with steps left/)
+  await ui.unmount()
+})

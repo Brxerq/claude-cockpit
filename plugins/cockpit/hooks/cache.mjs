@@ -10,6 +10,16 @@ import { k, shortModel } from './route.mjs'
 export const TTL_MS = { '5m': 5 * 60000, '1h': 60 * 60000 }
 // how long before the end the warning comes, or an automatic keep-warm ping goes out
 export const WARN_MS = { '5m': 60000, '1h': 5 * 60000 }
+// Claude Code 2.1.299+ compacts a terminal conversation of 200K+ tokens left idle about 54 minutes, before its
+// hour-long entry lapses (CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS moves the minimum, "idleCompaction": false turns it off)
+export const IDLE_COMPACT_MS = 54 * 60000
+export const IDLE_COMPACT_MIN = 200000
+
+// how long before the entry's end the warning comes. idleMin: the idle compaction minimum, null where it does not run.
+// On an hour-long entry it would hit, the warning counts back from the compaction instead
+export const compactsFirst = (c, idleMin) => idleMin != null && c.life === '1h' && c.tokens >= idleMin
+export const warnMs = (c, idleMin = null) => WARN_MS[c.life] + (compactsFirst(c, idleMin) ? TTL_MS['1h'] - IDLE_COMPACT_MS : 0)
+
 // requests are timed on this machine, so a hit that landed just inside the lifetime must not read as proof of the longer one
 const SLACK_MS = 10000
 
@@ -96,12 +106,12 @@ export const leftMs = (c, now) => (c.at ? Math.max(0, c.until - now) : 0)
 
 // none: no entry; live: a reply is running and every request renews it; warm, low (under 40% left), soon (inside the
 // warning), cold (lapsed)
-export function phase(c, now) {
+export function phase(c, now, idleMin = null) {
   if (!c.at) return 'none'
   if (c.busy) return 'live'
   const left = c.until - now
   if (left <= 0) return 'cold'
-  return left <= WARN_MS[c.life] ? 'soon' : left <= TTL_MS[c.life] * 0.4 ? 'low' : 'warm'
+  return left <= warnMs(c, idleMin) ? 'soon' : left <= TTL_MS[c.life] * 0.4 ? 'low' : 'warm'
 }
 
 // the time left in the steps the row shows: whole minutes, then 10 seconds for the last two. The row is redrawn only

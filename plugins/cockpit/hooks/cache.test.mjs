@@ -1,6 +1,6 @@
 // node hooks/cache.test.mjs
 import assert from 'node:assert/strict'
-import { accountOf, decideTtl, emptyCache, isStuck, leftLabel, leftMs, missReason, observe, phase, report, touch, TTL_MS } from './cache.mjs'
+import { accountOf, compactsFirst, decideTtl, emptyCache, isStuck, leftLabel, leftMs, missReason, observe, phase, report, touch, TTL_MS, warnMs } from './cache.mjs'
 
 const MIN = 60000
 const O = 'claude-opus-5-5'
@@ -89,6 +89,15 @@ assert.equal(phase(c, T + 20 * MIN), 'warm')
 assert.equal(phase(c, T + 50 * MIN), 'low')
 assert.equal(phase(c, T + 66 * MIN), 'soon')
 assert.equal(phase(c, T + 70 * MIN), 'cold')
+// idle compaction (about 54 minutes) hits an hour-long entry first: the warning counts back from it
+assert.equal(warnMs(c), 5 * MIN)
+assert.equal(warnMs(c, 80000), 11 * MIN)
+assert.equal(phase(c, T + 60 * MIN), 'low')
+assert.equal(phase(c, T + 60 * MIN, 80000), 'soon')
+// under the minimum, on a 5-minute entry, or where it does not run: the usual warning
+assert.equal(compactsFirst(c, 200000), false)
+assert.equal(compactsFirst({ ...c, life: '5m' }, 80000), false)
+assert.equal(compactsFirst(c, null), false)
 assert.equal(leftLabel(50 * MIN), '50m')
 assert.equal(leftLabel(119000), '2:00')
 assert.equal(leftLabel(61000), '1:10')
