@@ -8,6 +8,25 @@ export const status = (v: unknown): StepStatus => (STATUSES.includes(v as StepSt
 export const list = (v: unknown): Raw[] => (Array.isArray(v) ? v.filter(x => x && typeof x === 'object') : []) as Raw[]
 export const isFinished = (s: StepStatus) => s === 'done' || s === 'skipped'
 
+// the desktop app's update_plan moves: advance (finish the active step, start the next pending one),
+// done: [1-based], start: 1-based
+export function moveSteps(steps: PlanStep[], input: Raw, now: number): PlanStep[] {
+  const next = steps.map(st => ({ ...st }))
+  const finish = (i: number) => {
+    if (next[i]) next[i] = { ...next[i], status: 'done', doneAt: now }
+  }
+  if (input.advance === true) {
+    const at = next.findIndex(st => st.status === 'active')
+    finish(at)
+    const after = next.findIndex((st, i) => i > at && st.status === 'pending')
+    if (after >= 0) next[after] = { ...next[after], status: 'active' }
+  }
+  for (const n of Array.isArray(input.done) ? input.done : []) finish(Number(n) - 1)
+  const start = Number(input.start) - 1
+  if (next[start] && !isFinished(next[start].status)) next[start] = { ...next[start], status: 'active' }
+  return next
+}
+
 export const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
 
 // short updates: {next:true}, {done:[titles]}, {active:title}, {failed:title} against the stored plan;

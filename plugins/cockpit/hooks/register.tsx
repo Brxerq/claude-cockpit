@@ -9,7 +9,7 @@ import type { Cache, Plan, PlanStage, PlanState, Route, Router, Rule, Spec, Step
 import { accountOf, asTtl, compactsFirst, decideTtl, emptyCache, IDLE_COMPACT_MIN, IDLE_COMPACT_MS, isStuck, leftLabel, leftMs, phase, report, touch, TTL_MS, warnMs } from './cache.mjs'
 import { elapsed, lastHead, METER_COLOR, METER_STATE, meterSvg, plural, STATE_COLOR, STATE_GLYPH, textWidth, trackSvg, TRACK_H } from './draw.ts'
 import type { MeterLook } from './draw.ts'
-import { carryDone, DEMO, isFinished, normalize, parsePlan, PLAN_ID, pointAt, slug, str, where } from './plan.ts'
+import { carryDone, DEMO, isFinished, moveSteps, normalize, parsePlan, PLAN_ID, pointAt, slug, str, where } from './plan.ts'
 import type { Raw } from './plan.ts'
 // @ts-ignore plain JS, so its self-check runs under node without a build
 import { addTurn, buildRoutes, classify, emptyRoutes, emptyStats, formatStats, guard, isSetUp, k, MODELS, parseRule, parseSpec, routeFor, routeLabel, shortModel, specText, takesEffort, TASK_INFO, TASKS } from './route.mjs'
@@ -27,7 +27,7 @@ const cache = atom({ plugin: 'cockpit', key: 'cache' } as const, emptyCache() as
 
 // this text sits in the cached system prompt (about 40 tokens), so it stays short and never changes within a session
 const RULES = `# Cockpit
-If you have a todo tool (TodoWrite, TaskCreate), its list shows as a progress bar. If you have none, before the first tool call of any task of 3+ steps create a bar with ${TOOL}, then move it as each stage finishes, and finish it before your last reply. Never mention the bars.`
+If you have a todo tool (TodoWrite, TaskCreate, mcp__ccd_turn__update_plan), its list shows as a progress bar. If you have none, before the first tool call of any task of 3+ steps create a bar with ${TOOL}, then move it as each stage finishes, and finish it before your last reply. Never mention the bars.`
 
 // ---------- sound, bars, saving ----------
 
@@ -145,6 +145,29 @@ async function taskUpdated($: EngineInterface, raw: Raw): Promise<boolean> {
     return { ...prev, stages: [{ name: 'Tasks', steps }], state: isDone ? 'done' : 'running', endedAt: isDone ? now : null }
   })
   return typeof made !== 'string'
+}
+
+async function setTodos($: EngineInterface, todos: unknown) {
+  const stages = todosToStages(todos)
+  if (stages.length === 0) return dropPlan($, TODO_BAR)
+  const now = await $.clock.now()
+  await editPlan($, TODO_BAR, prev => {
+    const steps = stages[0]?.steps ?? []
+    const isDone = steps.every(st => isFinished(st.status))
+    return { id: TODO_BAR, title: prev?.title ?? 'Tasks', kind: 'todo', stages, state: isDone ? 'done' : 'running', note: null, startedAt: prev?.startedAt ?? now, endedAt: isDone ? (prev?.endedAt ?? now) : null }
+  })
+}
+
+const UPDATE_PLAN = 'mcp__ccd_turn__update_plan'
+
+async function movePlan($: EngineInterface, raw: Raw) {
+  const now = await $.clock.now()
+  return editPlan($, TODO_BAR, prev => {
+    if (!prev) return 'no bar'
+    const steps = moveSteps(prev.stages[0]?.steps ?? [], raw, now)
+    const isDone = steps.every(st => isFinished(st.status))
+    return { ...prev, stages: [{ name: 'Tasks', steps }], state: isDone ? 'done' : 'running', endedAt: isDone ? (prev.endedAt ?? now) : null }
+  })
 }
 
 // $.state lives as long as the process, so the bars are kept per session in the plugin's store as well
@@ -533,17 +556,19 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'TodoWrite' }, async ($, e, next) => {
     const ran = await next(e)
     if (e.agentId || ran.deny !== undefined || ran.isError === true) return ran
-    const stages = todosToStages((e as unknown as Raw).todos)
-    if (stages.length === 0) {
-      await dropPlan($, TODO_BAR)
-      return ran
-    }
-    const now = await $.clock.now()
-    await editPlan($, TODO_BAR, prev => {
-      const steps = stages[0]?.steps ?? []
-      const isDone = steps.every(st => isFinished(st.status))
-      return { id: TODO_BAR, title: prev?.title ?? 'Tasks', kind: 'todo', stages, state: isDone ? 'done' : 'running', note: null, startedAt: prev?.startedAt ?? now, endedAt: isDone ? (prev?.endedAt ?? now) : null }
-    })
+    await setTodos($, (e as unknown as Raw).todos)
+    isPlanTouched = true
+
+    return ran
+  })
+
+  // the desktop app's task list: items sends the whole list, advance / done / start move it
+  on('tool.call', { tool: UPDATE_PLAN }, async ($, e, next) => {
+    const ran = await next(e)
+    if (e.agentId || ran.deny !== undefined || ran.isError === true) return ran
+    const raw = e as unknown as Raw
+    if (Array.isArray(raw.items)) await setTodos($, raw.items)
+    else if (typeof (await movePlan($, raw)) === 'string') return ran
     isPlanTouched = true
 
     return ran

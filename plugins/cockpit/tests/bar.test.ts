@@ -1,6 +1,7 @@
 // claude plugin test plugins/cockpit: a bar left open at the end of a turn stops looking live
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import { moveSteps } from '../hooks/plan.ts'
 
 const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, bodyColumns: 100 } } as never
 
@@ -46,6 +47,27 @@ test('a turn that ends with the bar untouched turns it amber, without a sound', 
   expect(JSON.stringify(await ui.find({ type: 'Svg' }))).toMatch(/Not updated this turn/)
   expect(sounds.length).toBe(before)
   await ui.unmount()
+})
+
+test("the desktop app's update_plan feeds the tasks bar", async ($, on) => {
+  world(on, [])
+  on('tool.call', () => ({ result: 'ok' }) as never)
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+  await $.turn.start({ turnId: 't1', text: 'build it' } as never)
+  const plan = (input: object) => $.tool.call({ tool: 'mcp__ccd_turn__update_plan', ...input } as never)
+  await plan({ items: [{ content: 'Read', status: 'in_progress' }, { content: 'Edit', status: 'pending' }], scope: 'first_task' })
+  await plan({ advance: true })
+  const ui = await $.ui.mount({ plugin: 'cockpit', surface: 'desktop', ...(BAND as object) } as never)
+  expect(JSON.stringify(await ui.find({ type: 'Svg' }))).toMatch(/step 2 of 2, 50%/)
+  await ui.unmount()
+
+  const steps = ['Read', 'Edit', 'Test'].map((title, i) => ({ title, status: i === 0 ? 'active' : 'pending', substeps: [] }) as never)
+  const statuses = (s: { status: string }[]) => s.map(st => st.status)
+  const advanced = moveSteps(steps, { advance: true }, 1)
+  expect(statuses(advanced)).toEqual(['done', 'active', 'pending'])
+  const jumped = moveSteps(advanced, { done: [2], start: 3 }, 2)
+  expect(statuses(jumped)).toEqual(['done', 'done', 'active'])
+  expect(statuses(moveSteps(jumped, { advance: true }, 3))).toEqual(['done', 'done', 'done'])
 })
 
 test("a subagent's turn does not wipe the main turn's work", async ($, on) => {
