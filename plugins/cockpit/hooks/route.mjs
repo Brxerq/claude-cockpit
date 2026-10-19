@@ -118,17 +118,17 @@ export function parseRule(text) {
   return words.length && route ? { words, route: { model: route.model ?? null, effort: route.effort ?? null } } : null
 }
 
-// "still broken" after a hard prompt or a rule: one effort step up; past xhigh, the top model if you set one, else max
+// "still broken" after a hard prompt or a rule: one effort step up; past xhigh, the top model if you set one, then max
 function stepUp(prev, top) {
   const at = rank(prev?.effort ?? 'high')
   if (at < rank('xhigh')) return { model: prev?.model ?? null, effort: EFFORTS[at + 1] }
-  if (top) return { model: top, effort: 'xhigh' }
+  if (top && prev?.model !== top) return { model: top, effort: 'xhigh' }
   return { model: prev?.model ?? null, effort: 'max' }
 }
 
 // -> { task, reason, strong, override: { task?, model?, effort? }, text }
 // task is quick, normal, hard, or 'rule' (one of yours; its route is in override).
-// strong: the person asked for it (a tag, "ultrathink", "still broken"), so the cache guard lets it through.
+// strong: the person asked for it (a tag, one of their rules, "ultrathink", "still broken"), so the cache guard lets it through.
 // prevRoute: what the last prompt wanted; rules: yours, checked first; top: the model "still broken" climbs to past xhigh
 export function classify(raw, { prevTask = null, prevRoute = null, words = {}, rules = [], top = null } = {}) {
   const { text, tags } = parsePrompt(raw)
@@ -150,7 +150,8 @@ export function classify(raw, { prevTask = null, prevRoute = null, words = {}, r
   }
   if (prevTask && FOLLOW_UP.test(t)) return done(prevTask, 'follow-up', false, again())
   const isThink = THINK.test(t)
-  for (const r of rules) if (r.words?.length && rule([], r.words).test(t)) return done('rule', `your rule "${r.words[0]}"`, isThink, r.route)
+  // a rule is a choice you wrote down, so in a long chat it goes through like a tag
+  for (const r of rules) if (r.words?.length && rule([], r.words).test(t)) return done('rule', `your rule "${r.words[0]}"`, true, r.route)
   if (isThink) return done('hard', 'you asked for max', true)
   if (rule(HARD, words.hard).test(t)) return done('hard', 'hard task')
   if (rule(QUICK, words.quick).test(t)) return done('quick', 'quick edit')

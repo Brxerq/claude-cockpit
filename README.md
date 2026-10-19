@@ -25,12 +25,13 @@ Start a new session afterwards. Cockpit is built on Claude Code's function-hook 
 |---|---|
 | Router | **0**. It runs on your machine; the model never sees it. `@tags` are stripped before sending. |
 | Bars from Claude's todo list | **0** extra. Claude already writes that list; Cockpit only draws it. |
-| Rules in the system prompt | About 40 tokens, read from the prompt cache |
+| Rules in the system prompt | About 85 tokens, read from the prompt cache |
+| The `plan_progress` tool | About 170 tokens of tool schema, kept in the prompt (not behind ToolSearch) so the rule above can be followed, read from the prompt cache |
 | Named-stage bars (optional) | A short tool call, about once per stage, only on long tasks |
 | Cache meter | **0**. It reads the token counts every reply already reports. |
-| Keep-warm ping (only when you ask, or allow it) | One read of the conversation from the cache: a tenth of the input price or less, and a short reply. The toast shows what it cost. |
+| Keep-warm ping (only when you ask, or allow it) | One read of the conversation from the cache: a tenth of the input price or less, plus a short reply at the output price. The toast shows what it cost. |
 
-Cockpit never adds reminders to the conversation, never refuses an edit, and never sends Claude back at the end of a turn. A keep-warm ping is a side request: it adds nothing to the conversation.
+Cockpit never adds reminders to the conversation, never refuses an edit, and never sends Claude back at the end of a turn. The one line it adds is when you approve a plan: the plan's result tells Claude which bar tracks it (about 25 tokens), so Claude moves that bar instead of opening its own. A keep-warm ping is a side request: it adds nothing to the conversation.
 
 ## The router
 
@@ -48,7 +49,7 @@ Nothing is picked for you. Until you choose, every kind is set to **Keep**, whic
 
 ![The router panel: a model and effort dropdown for each kind of prompt, your rules, the still-broken ladder and the cache saver](docs/img/router.png)
 
-Type `/route` (or click **Set up router** in the footer). A panel opens with a Model and an Effort dropdown for each kind (Keep leaves your own setting). Your choice is saved for every project. After a routed reply, the footer chip shows what it ran on, such as `opus 5.5 · medium`, and clicking it reopens the panel.
+Type `/route` (or click **Set up router** in the footer). A panel opens with a Model and an Effort dropdown for each kind (Keep leaves your own setting). Your choice is saved for every project. After a routed reply, the footer chip shows what it ran on, such as `opus 5.5 · medium`, and clicking it reopens the panel. If the engine runs another model than the one asked for (a policy, say), you get one toast, and the chip and `/route stats` count the model that really ran.
 
 Prefer typing? The same in one line each:
 
@@ -69,7 +70,7 @@ Want "redesign" on Sonnet max and "architecture" on Opus xhigh? Add rules. They 
 /route rule remove redesign
 ```
 
-"yes", "ok" and "continue" repeat the last choice. "still broken" or "same error" steps up: Quick to Normal, Normal to Hard, then one effort level at a time up to xhigh. Past xhigh it goes to max, or to the model you pick with `/route stuck fable`. Only the first 300 characters count, so a pasted log full of the word "error" does not make a small request hard.
+"yes", "ok" and "continue" repeat the last choice. "still broken" or "same error" steps up: Quick to Normal, Normal to Hard, then one effort level at a time up to xhigh. Past xhigh it goes to max, or, if you picked one with `/route stuck fable`, to that model at xhigh and then max. Only the first 300 characters count, so a log pasted after your request does not make a small request hard. Put the request first: a log pasted before it is read as the request.
 
 ### One prompt only
 
@@ -118,10 +119,10 @@ A project can add its own in `.claude/cockpit.json` (same shape; its routes win,
 
 ### Protecting the prompt cache
 
-Claude Code caches the conversation per model, so a model switch makes the next reply re-read the whole conversation at full price. Per the [prompt caching docs](https://code.claude.com/docs/en/prompt-caching), Sonnet 5.5, Opus 5.5 and Fable 5.1 keep the cache when only effort changes. So Cockpit:
+Claude Code caches the conversation per model, so a switch to a model this conversation has not used within the cache lifetime makes the next reply re-read the whole conversation at full price. Per the [prompt caching docs](https://code.claude.com/docs/en/prompt-caching), Sonnet 5.5, Opus 5.5 and Fable 5.1 keep the cache when only effort changes. So Cockpit:
 
 - Always lets you move to the model you chose for **Normal** prompts. That is a one-time move.
-- With the **cache saver** on (the default), a long conversation (past 30k tokens) holds back a one-off trip to another model, unless you asked for it (a tag, "ultrathink", "still broken") or the cache has already expired. The panel says when this happened. Turn it off with `/route saver off` if you always want the exact model.
+- With the **cache saver** on (the default), a long conversation (past 30k tokens) holds back a one-off trip to another model, unless you asked for it (a tag, one of your rules, "ultrathink", "still broken") or the cache has already expired. The panel says when this happened. Turn it off with `/route saver off` if you always want the exact model.
 - Fixes the route at the start of a reply, so tool loops never switch mid-reply. Subagents are never touched.
 
 ## The cache meter
@@ -146,7 +147,7 @@ Want it kept warm while you are away? `/cache auto 2` lets Cockpit send up to 2 
 | `/cache ttl 5m`, `1h`, `auto` | Sets the lifetime yourself |
 | `/cache on`, `/cache off` | The row, its warning and its pings |
 
-**Which lifetime.** Cockpit follows [Claude Code's own rules](https://code.claude.com/docs/en/prompt-caching#cache-lifetime): `FORCE_PROMPT_CACHING_5M`, `CLAUDE_CODE_PROMPT_CACHE_TTL`, the `promptCacheTtl` setting, `ENABLE_PROMPT_CACHING_1H`, then the account (1 hour on a subscription, 5 minutes on usage credits, an API key or a cloud provider). It then checks that against the traffic: a reply that reads the cache more than 5 minutes after the last one proves the hour. `/cache` names the source in use.
+**Which lifetime.** Cockpit follows [Claude Code's own rules](https://code.claude.com/docs/en/prompt-caching#cache-lifetime): `FORCE_PROMPT_CACHING_5M`, `CLAUDE_CODE_PROMPT_CACHE_TTL`, the `promptCacheTtl` setting (managed settings first, then the project's local and shared files, then yours), `ENABLE_PROMPT_CACHING_1H`, then the account (1 hour on a subscription, 5 minutes on usage credits, an API key or a cloud provider). It then checks that against the traffic: a reply that reads the cache more than 5 minutes after the last one proves the hour. `/cache` names the source in use.
 
 **How it differs from a plain cache countdown.** It can renew the cache instead of only telling you to send a message. The bar animates by itself, so nothing is redrawn each second. And the router's cache saver now uses the real lifetime instead of assuming an hour.
 
@@ -167,7 +168,7 @@ Commands: `/progress` (hide or show), `/progress-demo`, `/progress-sounds`, `/pr
 
 ## Good to know
 
-- Cockpit is early (0.7.8). Please open an issue when something looks off.
+- Cockpit is early (0.7.9). Please open an issue when something looks off.
 - The keyword rules are English. Add your own words with `/route rule` or the project file.
 - Your choices are saved for every project; `/route off` resets when the app restarts.
 - `.claude/cockpit.json` is read when a session starts and whenever you change a choice.

@@ -110,6 +110,12 @@ assert.deepEqual(go('yes', { prevTask: 'rule', prevRoute: { model: MODELS.sonnet
 assert.equal(go('still broken', { prevTask: 'normal', prevRoute: { model: MODELS.sonnet, effort: 'high' } }).c.task, 'hard')
 assert.deepEqual(go('still broken', { prevTask: 'hard', prevRoute: { model: MODELS.opus, effort: 'high' } }).r, { model: MODELS.opus, effort: 'xhigh' })
 assert.deepEqual(go('same error', { prevTask: 'rule', prevRoute: { model: MODELS.opus, effort: 'xhigh' } }).r, { model: MODELS.fable, effort: 'xhigh' })
+// on the top model already, the next step is max there, not back to xhigh
+assert.deepEqual(go('still broken', { prevTask: 'hard', prevRoute: { model: MODELS.fable, effort: 'xhigh' } }).r, { model: MODELS.fable, effort: 'max' })
+assert.deepEqual(go('still broken', { prevTask: 'hard', prevRoute: { model: MODELS.fable, effort: 'max' } }).r, { model: MODELS.fable, effort: 'max' })
+// a rule is asked for, so the cache saver lets its model through in a long chat
+assert.equal(go('redesign the homepage').c.strong, true)
+assert.equal(guard({ wanted: go('redesign the homepage').r, ran: { model: MODELS.opus, effort: 'high' }, sessionModel: MODELS.opus, sessionEffort: 'high', home: mine.normal, ctxTokens: 120000, idleMs: 60000, strong: go('redesign the homepage').c.strong }).model, MODELS.sonnet)
 // without a top model the ladder ends at max
 assert.deepEqual(routeFor('hard', mine, classify('still broken', { prevTask: 'hard', prevRoute: { model: MODELS.opus, effort: 'xhigh' } }).override), { model: MODELS.opus, effort: 'max' })
 assert.equal(parseRule('no equals sign'), null)

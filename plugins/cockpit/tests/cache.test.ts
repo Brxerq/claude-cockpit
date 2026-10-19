@@ -123,6 +123,17 @@ test('with automatic pings allowed, Cockpit keeps the cache warm by itself, up t
   expect(w.toasts.filter(t => /Cache expires in/.test(t))).toHaveLength(1)
 })
 
+test('a plan window 95% used gets no automatic ping, only the warning', async ($, on) => {
+  const w: World = { toasts: [], forks: 0, windows: [{ kind: 'five_hour', percentUsed: 96 }] }
+  const clock = world(on, w, { cache: { auto: 2 } })
+  await start($)
+  await request($)
+
+  await clock.advance(60 * MIN)
+  expect(w.forks).toBe(0)
+  expect(w.toasts.filter(t => /Cache expires in/.test(t))).toHaveLength(1)
+})
+
 test('a subagent request is not the conversation and leaves the row out', async ($, on) => {
   const w: World = { toasts: [], forks: 0 }
   world(on, w)

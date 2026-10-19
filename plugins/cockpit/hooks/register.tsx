@@ -202,6 +202,9 @@ async function restorePlans($: EngineInterface) {
 //   "words": { "quick": ["changelog"] }, "cache": { "show": true, "auto": 0, "ttl": "1h" } }
 
 const PROJECT_FILE = '.claude/cockpit.json'
+// Claude Code's managed settings file, per OS (docs: managed-settings). shortcut: managed-settings.d/ drop-ins, MDM
+// and server-managed settings are not read; read them if an organization pins promptCacheTtl there
+const MANAGED_SETTINGS = ['C:/Program Files/ClaudeCode/managed-settings.json', '/Library/Application Support/ClaudeCode/managed-settings.json', '/etc/claude-code/managed-settings.json']
 const PANE = 'cockpit-router'
 const FREE_BELOW = 30000 // context tokens under which a switch, or a lapsed cache, is cheap enough to let pass
 const MODEL_CHOICES: [string, string | null][] = [['Keep', null], ['Haiku', MODELS.haiku], ['Sonnet', MODELS.sonnet], ['Opus', MODELS.opus], ['Fable', MODELS.fable]]
@@ -431,7 +434,10 @@ export const register: Register = (on, options) => {
   isSoundOn = options.sounds !== false
 
   // two copies would both rewrite every request and share one state; the first one loaded keeps the job
-  on('plugin.register', async ($, e, next) => (e.name === $.plugin.name && e.root !== $.plugin.root ? { refuse: `another ${e.name} is already loaded from ${$.plugin.root}` } : next(e)))
+  // every hook here fails open on purpose: a hook that fails lets the event through (here a failed duplicate check
+  // must not refuse other plugins), and where it had already called next, next(e) replays that answer so nothing
+  // beneath runs twice
+  on('plugin.register', async ($, e, next) => (e.name === $.plugin.name && e.root !== $.plugin.root ? { refuse: `another ${e.name} is already loaded from ${$.plugin.root}` } : next(e))).catch(($, e, next) => next(e))
   let workCalls = 0
   let isPlanTouched = false
   let isWaitingOnBackground = false
@@ -465,7 +471,7 @@ export const register: Register = (on, options) => {
     }
 
     return next(text === e.text ? e : { ...e, text })
-  })
+  }).catch(($, e, next) => next(e))
 
   // decides the route once per turn (first request), then every request of the main loop runs on it; subagents are untouched
   on('turn.step', async function* ($, e, next) {
@@ -526,11 +532,16 @@ export const register: Register = (on, options) => {
     const startedAt = await $.clock.now()
     const result = yield* next(sent)
     const u = result.usage
-    // the engine can refuse a model (policy); say so once instead of letting the router look like it works
+    // the engine can refuse a model (policy): the chip, the stats and the next switch then count what really ran,
+    // and the toast says so once instead of letting the router look like it works
     const family = (m: string) => m.replace(/\[.*\]$/, '')
-    if (u?.model && sent !== e && !hasToldKept && !family(u.model).startsWith(family(sent.model)) && !family(sent.model).startsWith(family(u.model))) {
-      hasToldKept = true
-      $.ui.toast(`Router: the engine ran ${u.model}, not ${sent.model}. /route shows the last decision.`, { timeoutMs: 15000 })
+    if (u?.model && sent !== e && !family(u.model).startsWith(family(sent.model)) && !family(sent.model).startsWith(family(u.model))) {
+      const ranModel = family(u.model)
+      await update($, router, x => (x.current ? { ...x, current: { ...x.current, model: ranModel }, ran: { model: ranModel, effort: x.current.effort } } : x))
+      if (!hasToldKept) {
+        hasToldKept = true
+        $.ui.toast(`Router: the engine ran ${u.model}, not ${sent.model}. /route shows the last decision.`, { timeoutMs: 15000 })
+      }
     }
     if (u) await sawRequest($, { at: startedAt, model: u.model || sent.model, read: u.cache_read_input_tokens, write: u.cache_creation_input_tokens, fresh: u.input_tokens, ping: false }).catch(() => undefined)
 
@@ -550,7 +561,7 @@ export const register: Register = (on, options) => {
     if (ran.deny === undefined) workCalls += 1
 
     return ran
-  })
+  }).catch(($, e, next) => next(e))
 
   // the todo list becomes the "tasks" bar; the call itself passes through untouched
   on('tool.call', { tool: 'TodoWrite' }, async ($, e, next) => {
@@ -560,7 +571,7 @@ export const register: Register = (on, options) => {
     isPlanTouched = true
 
     return ran
-  })
+  }).catch(($, e, next) => next(e))
 
   // the desktop app's task list: items sends the whole list, advance / done / start move it
   on('tool.call', { tool: UPDATE_PLAN }, async ($, e, next) => {
@@ -572,7 +583,7 @@ export const register: Register = (on, options) => {
     isPlanTouched = true
 
     return ran
-  })
+  }).catch(($, e, next) => next(e))
 
   // the task tools (one task per call) feed the same bar
   on('tool.call', { tool: 'TaskCreate' }, async ($, e, next) => {
@@ -582,7 +593,7 @@ export const register: Register = (on, options) => {
     isPlanTouched = true
 
     return ran
-  })
+  }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'TaskUpdate' }, async ($, e, next) => {
     const ran = await next(e)
@@ -590,7 +601,7 @@ export const register: Register = (on, options) => {
     if (await taskUpdated($, e as unknown as Raw)) isPlanTouched = true
 
     return ran
-  })
+  }).catch(($, e, next) => next(e))
 
   // a turn that ends with a bar still open costs nothing: the bar turns amber by itself, no model call to ask why
   on('classic.Stop', async ($, e, next) => {
@@ -606,7 +617,7 @@ export const register: Register = (on, options) => {
     for (const p of (await read($, plans)).filter(isOpenPlan)) await putPlan($, { ...p, state: 'needs_input', note }, isQuiet)
 
     return result
-  })
+  }).catch(($, e, next) => next(e))
 
   on('session.start', async ($, e, next) => {
     const unset = () => undefined
@@ -635,10 +646,11 @@ export const register: Register = (on, options) => {
       ttlVar: await $.env.get('CLAUDE_CODE_PROMPT_CACHE_TTL').catch(unset),
       enable1h: await $.env.get('ENABLE_PROMPT_CACHING_1H').catch(unset),
     }
-    // the promptCacheTtl setting: the project's local file, the project's, then yours
+    // the promptCacheTtl setting: your organization's managed file (it wins over every other), the project's local
+    // file, the project's, then yours. Only one managed path exists per OS; the others fail to read and are skipped
     ttlSetting = undefined
     let idleSetting: unknown
-    for (const file of ['.claude/settings.local.json', '.claude/settings.json', settingsPath($)?.replace(/cockpit\.json$/, 'settings.json')]) {
+    for (const file of [...MANAGED_SETTINGS, '.claude/settings.local.json', '.claude/settings.json', settingsPath($)?.replace(/cockpit\.json$/, 'settings.json')]) {
       if (!file) continue
       const s = (await readJson($, file)) as { promptCacheTtl?: unknown; idleCompaction?: unknown }
       if (!asTtl(ttlSetting)) ttlSetting = s.promptCacheTtl
@@ -687,14 +699,14 @@ export const register: Register = (on, options) => {
     }
 
     return next(e)
-  })
+  }).catch(($, e, next) => next(e))
 
   // a /model switch reports the lifetime the engine itself uses
   on('classic.PostModelSwitch', async ($, e, next) => {
     await update($, cache, x => onLife({ ...x, seen: e.cache_ttl }, x.pin ?? e.cache_ttl))
 
     return next(e)
-  })
+  }).catch(($, e, next) => next(e))
 
   on('prompt.compose', async ($, e, next) => {
     const result = await next(e)
@@ -719,7 +731,8 @@ export const register: Register = (on, options) => {
     const w = where(next)
 
     return { result: `${Math.min(w.pos, w.total)}/${w.total}${next.state === 'running' ? '' : ` ${next.state}`}` }
-  })
+    // the tool is Cockpit's own, so nothing beneath can answer it when this fails: the model hears the bar did not move
+  }).catch(() => ({ deny: 'The progress bar could not be updated. Carry on with the task.' }))
 
   on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
     const live = (await read($, plans)).filter(p => p.state === 'running').pop()
@@ -729,7 +742,7 @@ export const register: Register = (on, options) => {
     if (live) await update($, plans, list => list.map(p => (p.id === live.id && p.state === 'needs_input' ? { ...p, state: 'running' as const } : p)))
 
     return ran
-  })
+  }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'ExitPlanMode' }, async ($, e, next) => {
     play($, 'decision')
@@ -744,7 +757,7 @@ export const register: Register = (on, options) => {
 
     // the model learns which bar holds its plan, so it moves that one rather than opening its own
     return { ...ran, context: [...(ran.context ?? []), `cockpit: bar "${PLAN_ID}" tracks this plan; move it with {id:"${PLAN_ID}", next:true}.`] }
-  })
+  }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'progress' }, async $ => {
     if ((await read($, plans)).length === 0) return { text: 'No plan yet. /progress-demo shows a sample.' }

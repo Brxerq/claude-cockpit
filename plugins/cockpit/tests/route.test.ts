@@ -2,7 +2,8 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-function world(on: On, sent: string[], state = { isUsageBroken: false }) {
+// ranModel: the model the engine reports it ran, when it is not the one asked for
+function world(on: On, sent: string[], state: { isUsageBroken: boolean; ranModel?: string } = { isUsageBroken: false }) {
   mock.clock(on, { now: 1_000_000_000_000 })
   mock.store(on, { settings: { routes: { normal: 'sonnet high' } } })
   mock.env(on, {})
@@ -24,7 +25,7 @@ function world(on: On, sent: string[], state = { isUsageBroken: false }) {
   on('ui.toast', () => ({ value: undefined }) as never)
   on('turn.step', async function* ($, e) {
     sent.push(String(e.model))
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1, model: e.model } } as never
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1, model: state.ranModel ?? e.model } } as never
   })
 }
 
@@ -49,6 +50,33 @@ test('a turn whose first request carried no decision still gets its route on a l
   await $.prompt.submit({ text: 'Review the router code and explain how routes are decided.', origin: { kind: 'sdk' } } as never)
   await request($, 1)
   expect(sent).toEqual(['claude-sonnet-5-5'])
+})
+
+test('a route chosen mid-reply waits for the next turn', async ($, on) => {
+  const sent: string[] = []
+  world(on, sent)
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+  await $.prompt.submit({ text: 'Review the router code and explain how routes are decided.', origin: { kind: 'sdk' } } as never)
+  await request($, 0)
+  await $.command.run({ command: 'route', args: 'set normal opus high' } as never)
+  await request($, 1)
+  expect(sent).toEqual(['claude-sonnet-5-5', 'claude-sonnet-5-5'])
+  // the next turn's first request takes the new choice
+  await $.prompt.submit({ text: 'Review the router code and explain how routes are decided.', origin: { kind: 'sdk' } } as never)
+  await request($, 0)
+  expect(sent.at(-1)).toBe('claude-opus-5-5')
+})
+
+test('when the engine runs another model, the router counts that one', async ($, on) => {
+  const sent: string[] = []
+  // beneath the plugin, a policy that keeps every request on Fable
+  world(on, sent, { isUsageBroken: false, ranModel: 'claude-fable-5-1' })
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+  await $.prompt.submit({ text: 'Review the router code and explain how routes are decided.', origin: { kind: 'sdk' } } as never)
+  await request($, 0)
+  await request($, 1)
+  // the second request no longer asks for a model the engine will not run
+  expect(sent).toEqual(['claude-sonnet-5-5', 'claude-fable-5-1'])
 })
 
 test('a failing usage call does not keep the turn off its route', async ($, on) => {
