@@ -4,11 +4,12 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Cache, Plan, PlanStage, PlanState, Route, Router, Rule, Spec, StepStatus, Ttl } from '../types'
+import type { Cache, Handoff, Plan, PlanStage, PlanState, Route, Router, Rule, Spec, StepStatus, Ttl } from '../types'
 // @ts-ignore plain JS, as the router is
 import { accountOf, asTtl, compactsFirst, decideTtl, emptyCache, IDLE_COMPACT_MIN, IDLE_COMPACT_MS, isStuck, leftLabel, leftMs, phase, report, touch, TTL_MS, warnMs } from './cache.mjs'
 import { elapsed, lastHead, METER_COLOR, METER_STATE, meterSvg, plural, STATE_COLOR, STATE_GLYPH, textWidth, trackSvg, TRACK_H } from './draw.ts'
 import type { MeterLook } from './draw.ts'
+import { decidePrompt, fileName, isDue, openSteps, parseDecision, redact } from './handoff.ts'
 import { carryDone, DEMO, isFinished, moveSteps, normalize, parsePlan, PLAN_ID, pointAt, slug, str, where } from './plan.ts'
 import type { Raw } from './plan.ts'
 // @ts-ignore plain JS, so its self-check runs under node without a build
@@ -24,6 +25,7 @@ const ruleDraft = atom({ plugin: 'cockpit', key: 'ruleDraft' } as const, { model
 const isOpen = atom({ plugin: 'cockpit', key: 'isOpen' } as const, true)
 const router = atom({ plugin: 'cockpit', key: 'router' } as const, { mode: 'auto', routes: emptyRoutes(), rules: [], top: null, saver: true, pending: null, current: null, ran: null, seen: null, switched: false, stats: emptyStats() } as Router)
 const cache = atom({ plugin: 'cockpit', key: 'cache' } as const, emptyCache() as Cache)
+const handoff = atom({ plugin: 'cockpit', key: 'handoff' } as const, { phase: 'idle', file: '', words: 0, note: '' } as Handoff)
 
 // this text sits in the cached system prompt (about 40 tokens), so it stays short and never changes within a session
 const RULES = `# Cockpit
@@ -426,6 +428,120 @@ async function watchCache($: EngineInterface) {
   play($, 'decision')
 }
 
+// ---------- compact or hand off ----------
+// Near Claude Code's own compaction point, one side request over the cached conversation lets the model choose:
+// mid-task, Cockpit compacts and the summary keeps the steps left; at a clean stop, it saves a handoff for a new
+// session. Nothing is added to the conversation.
+
+// the token count the last decision was made at; 0: none since the context last shrank
+let decidedAt = 0
+let isDeciding = false
+let handoffText = ''
+
+const isWindows = ($: EngineInterface) => /^[A-Za-z]:/.test($.plugin.root)
+const psQuote = (s: string) => `'${s.replace(/'/g, "''")}'`
+const powershell = ($: EngineInterface, command: string) => $.process.run(['powershell', '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command], { timeoutMs: 10000 })
+
+// after each of the conversation's turns: decides once per climb, and again only after the context has shrunk
+async function checkContext($: EngineInterface) {
+  if ((await $.store.get('handoffAuto').catch(() => undefined)) === false) return
+  const b = (await $.session.usage({ breakdown: 'summary' })).context.breakdown
+  if (!b) return
+  if (decidedAt && b.totalTokens < decidedAt / 2) decidedAt = 0
+  if (decidedAt || !isDue(b)) return
+  decidedAt = b.totalTokens
+  await carryOn($, false)
+}
+
+// isForced: /handoff, a handoff whatever the work's state. Answers with what happened, in words
+async function carryOn($: EngineInterface, isForced: boolean): Promise<string> {
+  if (isDeciding) return 'A handoff is already being written.'
+  // compacting is refused while a reply runs: the next turn's end asks again
+  const isBusy = async () => (await read($, cache)).busy
+  if (await isBusy()) {
+    decidedAt = 0
+    return 'Claude is working. Try again when the reply is done.'
+  }
+  isDeciding = true
+  await update($, handoff, () => ({ phase: 'working', file: '', words: 0, note: isForced ? '' : 'deciding' }))
+  try {
+    const cwd = await $.session.cwd()
+    const r = await $.model.fork({ prompt: decidePrompt(cwd, openSteps(await read($, plans)), isForced) })
+    if ('usage' in r) await update($, router, x => ({ ...x, stats: addTurn(x.stats, 'handoff', r.usage, false) }))
+    if (!r.isAnswered) throw new Error(r.reason === 'api-error' ? `the model call failed (${r.status ?? 'no reply'})` : `no answer came back (${r.reason})`)
+    const d = parseDecision(r.text)
+    if (!d || !d.body) throw new Error('the answer named neither compact nor handoff')
+    if (d.kind === 'compact') {
+      await update($, handoff, () => ({ phase: 'idle', file: '', words: 0, note: '' }))
+      // the user may have sent the next prompt while the model was choosing
+      if (await isBusy()) {
+        decidedAt = 0
+        return 'Claude is working, so the compaction waits for the next turn to end.'
+      }
+      const done = await $.session.compact({ instructions: d.body }).catch((err: unknown) => ({ skip: err instanceof Error ? err.message : String(err) }))
+      if ('skip' in done && done.skip) {
+        $.ui.toast(`Compaction did not run: ${done.skip}`)
+        return `Compaction did not run: ${done.skip}`
+      }
+      await update($, cache, x => ({ ...x, at: 0, until: 0, pings: 0, why: null }))
+      const text = 'Work still open, so Cockpit compacted the conversation. The summary keeps the steps left.'
+      $.ui.toast(text)
+      return text
+    }
+    // a plugin loaded from a folder of its own (--plugin-dir) is not under ~/.claude, so the home folder names it
+    const home = (await $.env.get('USERPROFILE').catch(() => undefined)) ?? (await $.env.get('HOME').catch(() => undefined))
+    const dir = settingsPath($)?.replace(/cockpit\.json$/, 'handoffs') ?? (home ? `${home.replace(/\\/g, '/')}/.claude/handoffs` : null)
+    if (!dir) throw new Error('no ~/.claude folder to save it in')
+    const text = redact(d.body)
+    const file = `${dir}/${fileName(text, await $.clock.now())}`
+    await $.fs.write(file, `${text}\n`)
+    handoffText = text
+    await update($, handoff, () => ({ phase: 'ready', file, words: text.split(/\s+/).length, note: '' }))
+    play($, 'decision')
+    return `Handoff saved to ${file}.`
+  } catch (err) {
+    const why = (err instanceof Error ? err.message : String(err)).slice(0, 160)
+    await update($, handoff, () => ({ phase: 'failed', file: '', words: 0, note: why }))
+    return `Handoff failed: ${why}`
+  } finally {
+    isDeciding = false
+  }
+}
+
+const noteHandoff = ($: EngineInterface, note: string) => update($, handoff, x => ({ ...x, note }))
+
+// the desktop app starts the session itself; elsewhere a short line to paste after /clear goes to the clipboard
+async function startFromHandoff($: EngineInterface) {
+  const h = await read($, handoff)
+  // a reload keeps the row but not the text
+  handoffText ||= await $.fs.read(h.file).catch(() => '')
+  const line = `Read \`${h.file}\` and continue the work it describes.`
+  const ran = await $.tool
+    .call({ tool: 'mcp__ccd_session__start_session', initiation: 'user_asked', context: 'fresh', title: /^#\s*Handoff:\s*(.+)$/m.exec(handoffText)?.[1]?.slice(0, 59) ?? 'Continue from handoff', prompt: line, background: handoffText.slice(0, 1200) } as never)
+    .catch(() => null)
+  if (ran && ran.deny === undefined && ran.isError !== true) return noteHandoff($, 'New session started from the handoff.')
+  const copied = await copyText($, line)
+  return noteHandoff($, copied ? 'No new session here. Copied a start line: run /clear, then paste it.' : `Run /clear, then send: ${line}`)
+}
+
+async function copyText($: EngineInterface, text: string) {
+  const r = isWindows($) ? await powershell($, `Set-Clipboard -Value ${psQuote(text)}`).catch(() => null) : await $.process.run(['pbcopy'], { stdin: text }).catch(() => null)
+  return r?.exitCode === 0
+}
+
+// the whole handoff is read from its file: quotes and backticks in a long argument do not survive powershell -Command
+async function copyFile($: EngineInterface, file: string) {
+  const r = isWindows($)
+    ? await powershell($, `Get-Content -Raw -Encoding UTF8 -LiteralPath ${psQuote(file)} | Set-Clipboard`).catch(() => null)
+    : await $.process.run(['pbcopy'], { stdin: handoffText || (await $.fs.read(file).catch(() => '')) }).catch(() => null)
+  return r?.exitCode === 0
+}
+
+async function openFile($: EngineInterface, file: string) {
+  const r = isWindows($) ? await powershell($, `Invoke-Item -LiteralPath ${psQuote(file)}`).catch(() => null) : await $.process.run(['open', file]).catch(() => null)
+  if (r?.exitCode !== 0) await noteHandoff($, `Could not open it. The file is ${file}`)
+}
+
 const title = (t: string) => (t === 'rule' ? 'Your rule' : t.charAt(0).toUpperCase() + t.slice(1))
 const routeShort = (x: { model: string | null; effort: string | null }) => (x.model || x.effort ? routeLabel(x) : 'keep')
 const modelWord = (id: string | null) => Object.keys(MODELS).find(k => (MODELS as Record<string, string>)[k] === id)
@@ -677,6 +793,7 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'progress-clear', description: 'Remove all progress bars' })
     await $.command.register({ name: 'route', description: 'Choose a model and effort for quick, normal and hard prompts' })
     await $.command.register({ name: 'cache', description: 'Prompt cache: time left before it expires, keep it warm' })
+    await $.command.register({ name: 'handoff', description: 'Write a handoff of this chat for a new session; /handoff auto on | off' })
 
     return next(e)
   })
@@ -893,6 +1010,18 @@ export const register: Register = (on, options) => {
     }
   })
 
+  on('command.run', { command: 'handoff' }, async ($, e) => {
+    const [sub = '', arg = ''] = e.args.trim().toLowerCase().split(/\s+/)
+    if (sub === 'auto') {
+      if (arg !== 'on' && arg !== 'off') return { text: 'Example: /handoff auto off (on by default)' }
+      await $.store.set('handoffAuto', arg === 'on')
+      return { text: arg === 'on' ? 'Near the compaction point, Cockpit compacts or writes a handoff by itself.' : 'Automatic compact-or-handoff off. /handoff still writes one.' }
+    }
+    // the side request must not run inside the command's own turn
+    $.clock.after(0, () => void carryOn($, true))
+    return { text: 'Writing the handoff. It shows above the prompt when ready.' }
+  })
+
   // the setup panel: a status bar, one row of dropdowns per kind, your rules with an add field, and two options.
   // Every line wraps instead of clipping, so it reads at any panel width.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -1050,7 +1179,8 @@ export const register: Register = (on, options) => {
     const state = phase(c, now, idleMin) as 'none' | MeterLook
     // under FREE_BELOW tokens a lapsed cache costs too little to take a row
     const hasMeter = c.show && !c.hidden && state !== 'none' && c.tokens >= FREE_BELOW
-    if ((list.length === 0 && !hasMeter) || e.props.hasSurvey) return next(e)
+    const ho = await read($, handoff)
+    if ((list.length === 0 && !hasMeter && ho.phase === 'idle') || e.props.hasSurvey) return next(e)
     const meterTitle = state === 'cold' ? `Cache expired · next prompt re-reads ${k(c.tokens)}` : `Prompt cache · ${k(c.tokens)}${c.why && state !== 'live' ? ` · missed: ${c.why}` : ''}`
     const t = $.ui.resolve(e)
     const { Box, Button, Text } = t
@@ -1147,6 +1277,24 @@ export const register: Register = (on, options) => {
           )
         })}
         {hasMeter ? meter() : null}
+        {ho.phase === 'idle' ? null : (
+          <Box key="handoff-row" flexDirection="row" alignItems="center" gap={1}>
+            <Text color={STATE_COLOR[ho.phase === 'working' ? 'running' : ho.phase === 'ready' ? 'done' : 'error']}>{STATE_GLYPH[ho.phase === 'working' ? 'running' : ho.phase === 'ready' ? 'done' : 'error']}</Text>
+            <Text wrap="truncate">
+              {ho.phase === 'working' ? (ho.note === 'deciding' ? 'Context near its limit · choosing: compact or hand off' : 'Handoff · writing it from the conversation') : ho.phase === 'ready' ? `Handoff ready · ${plural(ho.words, 'word')}` : `Handoff failed: ${ho.note}`}
+            </Text>
+            {ho.phase === 'ready' && ho.note ? (
+              <Text dimColor wrap="truncate">
+                {ho.note}
+              </Text>
+            ) : null}
+            <Box flexGrow={1} />
+            {ho.phase === 'ready' ? <Button key="handoff-start" label="New session" onPress={() => startFromHandoff($)} /> : null}
+            {ho.phase === 'ready' ? <Button key="handoff-copy" label="Copy" onPress={async () => noteHandoff($, (await copyFile($, ho.file)) ? 'Copied.' : 'Copy failed. Open the file instead.')} /> : null}
+            {ho.phase === 'ready' ? <Button key="handoff-open" label="Open" onPress={() => openFile($, ho.file)} /> : null}
+            {ho.phase === 'working' ? null : <Button key="handoff-close" plain dimColor label="✕" onPress={() => update($, handoff, () => ({ phase: 'idle', file: '', words: 0, note: '' }))} />}
+          </Box>
+        )}
       </Box>
     )
   })
@@ -1169,7 +1317,10 @@ export const register: Register = (on, options) => {
         if (steps.length > 0 && steps.every(s => isFinished(s.status))) await putPlan($, { ...p, state: 'done', endedAt: now })
       }
     }
+    const result = await next(e)
+    // compacting is refused while a turn runs, so the check waits for this one to be over
+    if (!e.agentId) $.clock.after(0, () => void checkContext($).catch(() => undefined))
 
-    return next(e)
+    return result
   })
 }

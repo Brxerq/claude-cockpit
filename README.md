@@ -7,6 +7,7 @@
 - **Progress**: live bars above your prompt. Claude's own todo list becomes a bar automatically, so tracking progress costs zero extra tokens.
 - **Router**: you pick a model and effort for quick, normal and hard prompts in a small panel, and every prompt runs on the one that fits.
 - **Cache meter**: a row that counts down to the moment the prompt cache expires, warns once before it does, and can keep it warm for under a tenth of what a rewrite costs.
+- **Compact or hand off**: just before Claude Code would compact a long conversation, Claude chooses: compact it while the work is still open, or write a handoff for a new session once the work is at a clean stop.
 
 ## Install
 
@@ -29,9 +30,10 @@ Start a new session afterwards. Cockpit is built on Claude Code's function-hook 
 | The `plan_progress` tool | About 170 tokens of tool schema, kept in the prompt (not behind ToolSearch) so the rule above can be followed, read from the prompt cache |
 | Named-stage bars (optional) | A short tool call, about once per stage, only on long tasks |
 | Cache meter | **0**. It reads the token counts every reply already reports. |
+| Compact-or-handoff choice | One side request near the compaction point: a read of the conversation from the cache plus a short reply, or the handoff itself (up to about 2,000 output tokens). Once per climb. |
 | Keep-warm ping (only when you ask, or allow it) | One read of the conversation from the cache: a tenth of the input price or less, plus a short reply at the output price. The toast shows what it cost. |
 
-Cockpit never adds reminders to the conversation, never refuses an edit, and never sends Claude back at the end of a turn. The one line it adds is when you approve a plan: the plan's result tells Claude which bar tracks it (about 25 tokens), so Claude moves that bar instead of opening its own. A keep-warm ping is a side request: it adds nothing to the conversation.
+Cockpit never adds reminders to the conversation, never refuses an edit, and never sends Claude back at the end of a turn. The one line it adds is when you approve a plan: the plan's result tells Claude which bar tracks it (about 25 tokens), so Claude moves that bar instead of opening its own. A keep-warm ping and the compact-or-handoff choice are side requests: they add nothing to the conversation.
 
 ## The router
 
@@ -153,6 +155,20 @@ Want it kept warm while you are away? `/cache auto 2` lets Cockpit send up to 2 
 
 **One thing it learns as it goes.** Claude Code sends side requests with the 5-minute lifetime. Whether such a read renews a 1-hour cache for the full hour is not documented, so on a subscription a ping counts as 5 more minutes until a later reply proves it bought more. From then on pings count for the hour.
 
+## Compact or hand off
+
+Claude Code compacts a conversation by itself when the context nears its limit, even in the middle of a task. Cockpit steps in a little earlier, at 85% of that point. Once, at the end of a turn, it sends one side request over the cached conversation and lets Claude choose:
+
+- **Compact**: the work is mid-task (steps left on a bar, a fix half done, tests failing). Cockpit compacts now, and the summary is told to keep the goal, the steps left, the decisions and the file paths.
+- **Hand off**: the work is at a clean stop (finished, committed, or the next request is a different task). Claude writes a handoff and Cockpit saves it to `~/.claude/handoffs/`. A row above the prompt then offers **New session** (the desktop app starts one from the file; elsewhere you get a line to paste after `/clear`), **Copy** and **Open**.
+
+Claude sees the bars' unfinished steps when it chooses. It decides again only after the context has shrunk. Anything shaped like an API key or token is cut from the handoff before it is saved.
+
+| Command | Does |
+|---|---|
+| `/handoff` | Writes a handoff now, whatever the size |
+| `/handoff auto off`, `/handoff auto on` | The automatic choice near the compaction point (on by default) |
+
 ## Progress bars
 
 - Claude's todo list shows as a `Tasks` bar by itself
@@ -168,7 +184,7 @@ Commands: `/progress` (hide or show), `/progress-demo`, `/progress-sounds`, `/pr
 
 ## Good to know
 
-- Cockpit is early (0.7.9). Please open an issue when something looks off.
+- Cockpit is early (0.8.0). Please open an issue when something looks off.
 - The keyword rules are English. Add your own words with `/route rule` or the project file.
 - Your choices are saved for every project; `/route off` resets when the app restarts.
 - `.claude/cockpit.json` is read when a session starts and whenever you change a choice.
@@ -179,7 +195,7 @@ Commands: `/progress` (hide or show), `/progress-demo`, `/progress-sounds`, `/pr
 node plugins/cockpit/hooks/route.test.mjs   # router, cache guard, stats
 node plugins/cockpit/hooks/plan.test.mjs    # bars and drawing (Node 22+)
 node plugins/cockpit/hooks/cache.test.mjs   # cache lifetime, misses, keep-warm
-claude plugin test plugins/cockpit          # the cache meter through the engine
+claude plugin test plugins/cockpit          # the cache meter and compact-or-handoff through the engine
 claude plugin validate plugins/cockpit
 ```
 

@@ -1,6 +1,6 @@
 ---
 name: cockpit
-description: Reference for Cockpit's plan_progress bars, its /route model router and its /cache prompt-cache meter. The bar rules are already in the system prompt; load only when the user asks about the bars, the router or the cache meter, or a bar call was refused.
+description: Reference for Cockpit's plan_progress bars, its /route model router, its /cache prompt-cache meter and its /handoff compact-or-handoff choice. The bar rules are already in the system prompt; load only when the user asks about the bars, the router, the cache meter or handoffs, or a bar call was refused.
 ---
 
 # Bars
@@ -43,3 +43,10 @@ A row above the prompt, once the conversation passes 30k tokens: a bar that drai
 - `/cache auto 2|off`: pings Cockpit may send by itself in one pause (0 to 5, off by default)
 - `/cache ttl 5m|1h|auto`, `/cache on|off`
 - Settings live under `cache` in `~/.claude/cockpit.json`.
+
+# Compact or hand off (/handoff)
+
+Near Claude Code's own compaction point (85% of it), at a turn's end, one side request asks the model over the cached conversation: COMPACT while work is open (Cockpit compacts, and the summary keeps the steps left), or HANDOFF at a clean stop (a handoff saved to `~/.claude/handoffs/`, with a row offering New session, Copy and Open). Once per climb; nothing is added to the conversation.
+
+- `/handoff`: write a handoff now
+- `/handoff auto on|off`: the automatic choice (on by default)

@@ -85,6 +85,9 @@ export type Cache = {
   why: string | null
 }
 
+// the handoff row: idle (no row), the model writing it, the file it saved, or why it failed
+export type Handoff = { phase: 'idle' | 'working' | 'ready' | 'failed'; file: string; words: number; note: string }
+
 declare module 'claude-code' {
   interface PluginState {
     cockpit: {
@@ -94,6 +97,7 @@ declare module 'claude-code' {
       // the model and effort the panel's "add a rule" dropdowns hold
       ruleDraft: { model: string; effort: string }
       cache: Cache
+      handoff: Handoff
     }
   }
 }
