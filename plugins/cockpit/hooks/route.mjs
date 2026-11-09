@@ -9,7 +9,7 @@ export const MODELS = {
   haiku: 'claude-haiku-5-5',
   sonnet: 'claude-sonnet-5-5',
   opus: 'claude-opus-5-5',
-  fable: 'claude-fable-5-1',
+  fable: 'claude-fable-5-2',
 }
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 export const TASKS = ['quick', 'normal', 'hard']
@@ -29,7 +29,7 @@ const rank = e => EFFORTS.indexOf(e) // -1 for none
 // models that take no effort setting (it errors or is ignored)
 const NO_EFFORT = /haiku-4|claude-3|sonnet-4-5|sonnet-4-0|opus-4-1|opus-4-0/
 // Claude Code keeps the prompt cache when effort changes on these (docs: prompt caching, "Changing effort level")
-const EFFORT_KEEPS_CACHE = /^claude-(sonnet-5-5|opus-5-5|fable-5-1)/
+const EFFORT_KEEPS_CACHE = /^claude-(sonnet-5-5|opus-5-5|haiku-5-5|fable-5-[1-9])/
 
 export const takesEffort = model => !NO_EFFORT.test(model || '')
 export function clampEffort(model, effort) {
@@ -171,7 +171,7 @@ export function routeFor(task, routes, override = {}) {
 // ---------- the cache guard ----------
 //
 // A model switch makes the next reply read the whole conversation uncached. An effort change does the same on most
-// models (not on Sonnet 5.5, Opus 5.5 and Fable 5.1). So in a long conversation, short trips to another model are
+// models (not on Sonnet 5.5, Opus 5.5, Haiku 5.5 and Fable 5.1 or later). So in a long conversation, short trips to another model are
 // held back. A switch always goes through when:
 //   the person asked for it, the conversation is still small, the cache has already expired, or it moves to the
 //   "home" model (the one chosen for normal prompts), which is a one-time move, not a back-and-forth.

@@ -1125,7 +1125,7 @@ export const register: Register = (on, options) => {
             <Box flexGrow={1} flexShrink={1}>
               <Text wrap="wrap">When still broken after xhigh, move to</Text>
             </Box>
-            {picker('stuck', [{ value: 'max', label: 'Max, same model' }, { value: 'sonnet', label: 'Sonnet 5.5' }, { value: 'opus', label: 'Opus 5.5' }, { value: 'fable', label: 'Fable 5.1' }], modelWord(r.top) ?? 'max', v => setOption($, { top: v === 'max' ? null : v }))}
+            {picker('stuck', [{ value: 'max', label: 'Max, same model' }, { value: 'sonnet', label: 'Sonnet 5.5' }, { value: 'opus', label: 'Opus 5.5' }, { value: 'fable', label: 'Fable 5.2' }], modelWord(r.top) ?? 'max', v => setOption($, { top: v === 'max' ? null : v }))}
           </Box>
           <Box flexDirection="row" flexWrap="wrap" alignItems="center" gap={1}>
             <Box flexGrow={1} flexShrink={1}>

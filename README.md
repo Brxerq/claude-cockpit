@@ -121,7 +121,7 @@ A project can add its own in `.claude/cockpit.json` (same shape; its routes win,
 
 ### Protecting the prompt cache
 
-Claude Code caches the conversation per model, so a switch to a model this conversation has not used within the cache lifetime makes the next reply re-read the whole conversation at full price. Per the [prompt caching docs](https://code.claude.com/docs/en/prompt-caching), Sonnet 5.5, Opus 5.5 and Fable 5.1 keep the cache when only effort changes. So Cockpit:
+Claude Code caches the conversation per model, so a switch to a model this conversation has not used within the cache lifetime makes the next reply re-read the whole conversation at full price. Per the [prompt caching docs](https://code.claude.com/docs/en/prompt-caching), Sonnet 5.5, Opus 5.5, Haiku 5.5 and Fable 5.1 or later keep the cache when only effort changes. So Cockpit:
 
 - Always lets you move to the model you chose for **Normal** prompts. That is a one-time move.
 - With the **cache saver** on (the default), a long conversation (past 30k tokens) holds back a one-off trip to another model, unless you asked for it (a tag, one of your rules, "ultrathink", "still broken") or the cache has already expired. The panel says when this happened. Turn it off with `/route saver off` if you always want the exact model.
@@ -184,7 +184,7 @@ Commands: `/progress` (hide or show), `/progress-demo`, `/progress-sounds`, `/pr
 
 ## Good to know
 
-- Cockpit is early (0.8.0). Please open an issue when something looks off.
+- Cockpit is early (0.8.1). Please open an issue when something looks off.
 - The keyword rules are English. Add your own words with `/route rule` or the project file.
 - Your choices are saved for every project; `/route off` resets when the app restarts.
 - `.claude/cockpit.json` is read when a session starts and whenever you change a choice.

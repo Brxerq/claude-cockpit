@@ -66,6 +66,11 @@ assert.equal(guard({ ...base, sessionModel: S, home: { model: S, effort: 'medium
 assert.equal(guard({ ...base, sessionModel: S, home: { model: S, effort: 'medium' }, idleMs: 2 * 3600000, wanted: { model: O, effort: 'high' }, ran: { model: S, effort: 'medium' } }).model, O)
 // effort on Sonnet 5.5 / Opus 5.5 never waits
 assert.deepEqual(guard({ ...base, wanted: { model: null, effort: 'max' }, ran: { model: O, effort: 'medium' } }), { model: O, effort: 'max', held: [] })
+// nor on Fable 5.2, even when it steps down
+assert.equal(MODELS.fable, 'claude-fable-5-2')
+assert.deepEqual(guard({ ...base, sessionModel: MODELS.fable, wanted: { model: null, effort: 'low' }, ran: { model: MODELS.fable, effort: 'high' } }), { model: MODELS.fable, effort: 'low', held: [] })
+// an older model still waits on a step down
+assert.deepEqual(guard({ ...base, sessionModel: 'claude-opus-4-8', wanted: { model: null, effort: 'low' }, ran: { model: 'claude-opus-4-8', effort: 'high' } }).held, ['effort'])
 // keep / keep changes nothing
 assert.deepEqual(guard({ ...base, wanted: { model: null, effort: null }, ran: null }), { model: O, effort: 'medium', held: [] })
 
