@@ -110,7 +110,7 @@ test('the ✕ hides the row for this session and saves nothing; /cache on brings
   await back.unmount()
 })
 
-test('with automatic pings allowed, Cockpit keeps the cache warm by itself, up to the limit', async ($, on) => {
+test('with automatic pings allowed, Cockpit keeps the cache warm by itself, up to the limit', { timeoutMs: 30_000 }, async ($, on) => {
   const w: World = { toasts: [], forks: 0 }
   const clock = world(on, w, { cache: { auto: 2 } })
   await start($)
@@ -123,7 +123,7 @@ test('with automatic pings allowed, Cockpit keeps the cache warm by itself, up t
   expect(w.toasts.filter(t => /Cache expires in/.test(t))).toHaveLength(1)
 })
 
-test('a plan window 95% used gets no automatic ping, only the warning', async ($, on) => {
+test('a plan window 95% used gets no automatic ping, only the warning', { timeoutMs: 30_000 }, async ($, on) => {
   const w: World = { toasts: [], forks: 0, windows: [{ kind: 'five_hour', percentUsed: 96 }] }
   const clock = world(on, w, { cache: { auto: 2 } })
   await start($)

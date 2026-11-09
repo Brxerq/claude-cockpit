@@ -229,6 +229,14 @@ export function where(p: Plan): Where {
   return { pos, total: steps.length, stage, step: cur ? cur.j + 1 : (p.stages[stage]?.steps.length ?? 0), stageSize: p.stages[stage]?.steps.length ?? 0 }
 }
 
+// the saved sessions, least recently saved first, after `key` is saved (isKept) or cleared: { order, drop } where drop
+// are the oldest past `max`
+export function recentKeys(prev: unknown, key: string, isKept: boolean, max: number): { order: string[]; drop: string[] } {
+  const order = (Array.isArray(prev) ? prev.filter(k => typeof k === 'string') : []).filter(k => k !== key)
+  if (isKept) order.push(key)
+  return { order: order.slice(Math.max(0, order.length - max)), drop: order.slice(0, Math.max(0, order.length - max)) }
+}
+
 export const slug = (s: string) =>
   s
     .toLowerCase()

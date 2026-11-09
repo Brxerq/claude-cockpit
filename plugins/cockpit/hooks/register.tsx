@@ -10,7 +10,7 @@ import { accountOf, asTtl, compactsFirst, decideTtl, emptyCache, IDLE_COMPACT_MI
 import { elapsed, lastHead, METER_COLOR, METER_STATE, meterSvg, plural, STATE_COLOR, STATE_GLYPH, textWidth, trackSvg, TRACK_H } from './draw.ts'
 import type { MeterLook } from './draw.ts'
 import { decidePrompt, fileName, isDue, openSteps, parseDecision, redact } from './handoff.ts'
-import { carryDone, DEMO, isFinished, moveSteps, normalize, parsePlan, PLAN_ID, pointAt, slug, str, where } from './plan.ts'
+import { carryDone, DEMO, isFinished, moveSteps, normalize, parsePlan, PLAN_ID, pointAt, recentKeys, slug, str, where } from './plan.ts'
 import type { Raw } from './plan.ts'
 // @ts-ignore plain JS, so its self-check runs under node without a build
 import { addTurn, buildRoutes, classify, emptyRoutes, emptyStats, formatStats, guard, isSetUp, k, MODELS, parseRule, parseSpec, routeFor, routeLabel, shortModel, specText, takesEffort, TASK_INFO, TASKS } from './route.mjs'
@@ -41,7 +41,7 @@ function play($: EngineInterface, name: 'decision' | 'error' | 'done') {
   const file = `${$.plugin.root}/sounds/${name}.wav`.replace(/\//g, '\\')
   const viaPowerShell = () =>
     $.process
-      .run(['powershell', '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `(New-Object Media.SoundPlayer '${file}').PlaySync()`], { timeoutMs: 5000 })
+      .run(['powershell', '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `(New-Object Media.SoundPlayer ${psQuote(file)}).PlaySync()`], { timeoutMs: 5000 })
       .catch(() => undefined)
   if (/^[A-Za-z]:/.test($.plugin.root)) {
     void viaPowerShell()
@@ -177,16 +177,17 @@ const SAVED = 'plans:'
 const KEEP_SESSIONS = 20
 let lastSaved: Plan[] | null = null
 
+// the saved sessions, least recently saved first: the store's own key order is not promised
+const SAVED_ORDER = 'plansOrder'
+
 async function savePlans($: EngineInterface, list: Plan[]) {
   lastSaved = list
   const key = SAVED + (await $.session.id())
-  if (list.length === 0) {
-    await $.store.delete(key)
-    return
-  }
-  await $.store.set(key, list)
-  const keys = (await $.store.keys()).filter(k => k.startsWith(SAVED))
-  for (const old of keys.slice(0, Math.max(0, keys.length - KEEP_SESSIONS))) await $.store.delete(old)
+  const { order, drop } = recentKeys(await $.store.get(SAVED_ORDER).catch(() => undefined), key, list.length > 0, KEEP_SESSIONS)
+  if (list.length === 0) await $.store.delete(key)
+  else await $.store.set(key, list)
+  for (const old of drop) await $.store.delete(old)
+  await $.store.set(SAVED_ORDER, order)
 }
 
 async function restorePlans($: EngineInterface) {

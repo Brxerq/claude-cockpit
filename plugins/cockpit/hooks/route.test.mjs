@@ -79,6 +79,8 @@ assert.deepEqual(guard({ ...base, wanted: { model: null, effort: null }, ran: nu
 const homeRoute = { model: S, effort: 'high' }
 const restart = guard({ sessionModel: O, sessionEffort: 'medium', ctxTokens: 120000, idleMs: 0, home: homeRoute, wanted: { model: MODELS.haiku, effort: null }, ran: null })
 assert.deepEqual([restart.model, restart.effort, restart.held], [S, 'high', ['model']])
+// a held hard prompt keeps its own effort on the home model: Fable high held in a long chat runs Sonnet high, not medium
+assert.deepEqual(guard({ sessionModel: S, sessionEffort: 'medium', ctxTokens: 120000, idleMs: 0, home: { model: S, effort: 'medium' }, wanted: { model: MODELS.fable, effort: 'high' }, ran: { model: S, effort: 'medium' } }), { model: S, effort: 'high', held: ['model'] })
 // a normal prompt in the same state goes straight to Sonnet high
 assert.deepEqual(guard({ sessionModel: O, sessionEffort: 'medium', ctxTokens: 120000, home: homeRoute, wanted: homeRoute, ran: null }), { model: S, effort: 'high', held: [] })
 // once on Sonnet, a quick prompt stays on Sonnet high instead of hopping to Haiku

@@ -153,7 +153,6 @@ export function drawTrack(p: Plan, W: number): Track {
       }
       k++
     })
-    void i
   })
 
   // knob: a pill with stage and count, or a round dot with the stage number when narrow
@@ -173,21 +172,19 @@ export function drawTrack(p: Plan, W: number): Track {
   } else {
     const name = done ? (p.endedAt && p.endedAt - p.startedAt >= 1000 ? elapsed(p.endedAt - p.startedAt) : 'Done') : single ? (p.stages[0]?.name ?? 'Tasks') : (p.stages[w.stage]?.name ?? '')
     // the pill carries the stage name alone; the fill and the percent already say how far along it is
-    const count = ''
     const iconW = icon ? 16 : 0
-    const countW = count ? textWidth(count, 6.5) : -6
     const maxW = Math.max(80, W * 0.55)
     let shown = name
-    while (shown.length > 3 && 20 + iconW + textWidth(shown) + 6 + countW > maxW) shown = shown.slice(0, -1)
+    while (shown.length > 3 && 20 + iconW + textWidth(shown) > maxW) shown = shown.slice(0, -1)
     if (shown !== name) shown = shown.trimEnd() + '…'
     // a running pill is wide enough for its clock too, so the hover swap does not change its size
     const textW = done ? textWidth(shown) : Math.max(textWidth(shown), CLOCK_W)
-    kw = Math.round(20 + iconW + textW + 6 + countW)
+    kw = Math.round(20 + iconW + textW)
     const left = -(iconW + textW) / 2
     const mid = left + iconW + textW / 2
     knob = `<rect x="${-kw / 2}" y="0" width="${kw}" height="${H}" rx="${H / 2}" fill="${color}"/>`
     if (icon) knob += `<path d="${icon}" transform="translate(${left.toFixed(1)} 5) scale(.5)" fill="none" stroke="${INK}" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>`
-    knob += `<text x="${mid.toFixed(1)}" y="${H / 2 + 4.2}" text-anchor="middle" class="kt">${esc(shown)}${count ? `<tspan class="kc" dx="6">${count}</tspan>` : ''}</text>`
+    knob += `<text x="${mid.toFixed(1)}" y="${H / 2 + 4.2}" text-anchor="middle" class="kt">${esc(shown)}</text>`
     // hovering the pill lays a copy of it over the stage name, carrying the time the plan has run so far
     if (!done) {
       const face = `<rect x="${-kw / 2}" y="0" width="${kw}" height="${H}" rx="${H / 2}" fill="${color}"/>${
@@ -203,7 +200,6 @@ export function drawTrack(p: Plan, W: number): Track {
   const style = `<style>
 ${fillCss}
 .kt{font:${KNOB_FONT};fill:${INK}}
-.kc{font-weight:400;fill-opacity:.75}
 </style>`
   const hoverStyle = `<style>
 .tp{opacity:0;transition:opacity .12s;pointer-events:none}${tipRules.length ? `${tipRules.join(',')}{opacity:1}` : ''}

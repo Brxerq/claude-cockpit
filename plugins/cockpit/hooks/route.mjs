@@ -187,7 +187,8 @@ export function guard({ wanted, ran, sessionModel, sessionEffort, home = null, c
   if (model !== lastModel && !free && model !== (homeModel ?? sessionModel)) {
     held.push('model')
     model = homeModel ?? lastModel
-    if (homeModel) wantedEffort = home.effort
+    // the effort the prompt asked for still applies on the home model; only the model trip is held
+    if (homeModel) wantedEffort = wanted.effort ?? home.effort
   }
   const lastEffort = ran?.model === model ? (ran?.effort ?? null) : (sessionEffort ?? null)
   let effort = clampEffort(model, wantedEffort ?? sessionEffort)

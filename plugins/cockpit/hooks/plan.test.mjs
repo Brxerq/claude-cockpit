@@ -1,6 +1,11 @@
 // node hooks/plan.test.mjs (Node 22+ strips the TypeScript types itself)
 import assert from 'node:assert/strict'
-import { carryDone, normalize, parsePlan, where } from './plan.ts'
+import { carryDone, normalize, parsePlan, recentKeys, where } from './plan.ts'
+
+// saved bars: the session saved again moves to the end, so it is never the oldest one dropped
+assert.deepEqual(recentKeys(['a', 'b', 'c'], 'a', true, 2), { order: ['c', 'a'], drop: ['b'] })
+assert.deepEqual(recentKeys(['a', 'b'], 'a', false, 20), { order: ['b'], drop: [] })
+assert.deepEqual(recentKeys(undefined, 'a', true, 20), { order: ['a'], drop: [] })
 import { STATE_COLOR, trackSvg } from './draw.ts'
 
 const stages = [

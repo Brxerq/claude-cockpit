@@ -71,7 +71,7 @@ export function parseDecision(text: string): { kind: 'compact' | 'handoff'; body
 export const redact = (text: string) =>
   text.replace(/\b(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|xox[abp]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,})\b/g, '<secret removed>').replace(/(Bearer\s+)[A-Za-z0-9._-]{20,}/g, '$1<secret removed>')
 
-// 2026-10-26-1430-fix-the-login.md, from the handoff's own title
+// 2026-10-26-143005-fix-the-login.md, from the handoff's own title; seconds, so two in one minute do not overwrite
 export function fileName(text: string, now: number) {
   const title = /^#\s*Handoff:\s*(.+)$/m.exec(text)?.[1] ?? ''
   const slug =
@@ -82,5 +82,5 @@ export function fileName(text: string, now: number) {
       .slice(0, 48) || 'session'
   const d = new Date(now)
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}-${slug}.md`
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-${slug}.md`
 }
