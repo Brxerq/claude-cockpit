@@ -77,6 +77,8 @@ async function putPlan($: EngineInterface, next: Plan, isQuiet = false) {
 // builds a bar from the latest stored one inside update(), so back-to-back calls never work from a stale copy;
 // make returns a string to refuse, and the list stays as it was
 async function editPlan($: EngineInterface, id: string, make: (prev: Plan | null) => Plan | string, isQuiet = false): Promise<Plan | string> {
+  // a bar you closed stays closed until your next prompt, whatever the model sends for it
+  if (closedBars.has(id)) return 'closed'
   let prev: Plan | undefined
   let made = '' as Plan | string
   await update($, plans, list => {
@@ -86,13 +88,41 @@ async function editPlan($: EngineInterface, id: string, make: (prev: Plan | null
   })
   if (typeof made === 'string') return made
   if (!isQuiet) chime($, prev?.state, made.state)
-  if (!prev) await update($, isOpen, () => true)
   return made
 }
 
 async function dropPlan($: EngineInterface, id: string) {
   lastHead.delete(id)
   await update($, plans, list => list.filter(p => p.id !== id))
+}
+
+// What you closed stays closed: the hide toggle, the cache row's ✕, and the bars closed since your last prompt. The
+// app can restart a session's process between turns, which resets $.state, so these are kept in the store as well.
+// shortcut: one small key per session is never pruned, prune with the saved bars if the store grows
+const VIEW = 'view:'
+const closedBars = new Set<string>()
+
+// never throws: a failed save must not stop the prompt or the press it rides on
+async function saveView($: EngineInterface) {
+  try {
+    const view = { isOpen: await read($, isOpen), hidden: (await read($, cache)).hidden, closed: [...closedBars] }
+    await $.store.set(VIEW + (await $.session.id()), view)
+  } catch {}
+}
+
+async function restoreView($: EngineInterface) {
+  closedBars.clear()
+  const v = (await $.store.get(VIEW + (await $.session.id()))) as { isOpen?: unknown; hidden?: unknown; closed?: unknown } | undefined
+  if (!v || typeof v !== 'object') return
+  if (v.isOpen === false) await update($, isOpen, () => false)
+  if (v.hidden === true) await update($, cache, x => ({ ...x, hidden: true }))
+  for (const id of Array.isArray(v.closed) ? v.closed : []) closedBars.add(String(id))
+}
+
+async function closeBar($: EngineInterface, id: string) {
+  closedBars.add(id)
+  await dropPlan($, id)
+  await saveView($)
 }
 
 const STEP_SCHEMA = {
@@ -577,6 +607,11 @@ export const register: Register = (on, options) => {
     const r = await read($, router)
     // your prompt ends the pause: automatic pings get their budget back
     if ((await read($, cache)).pings > 0) await update($, cache, x => ({ ...x, pings: 0 }))
+    // a new prompt is new work: its bars may show again
+    if (closedBars.size > 0) {
+      closedBars.clear()
+      await saveView($)
+    }
     let text = e.text
     if (r.mode === 'auto' && !e.text.trimStart().startsWith('/')) {
       const c = classify(e.text, { prevTask: r.pending?.task ?? r.current?.task ?? null, prevRoute: r.current?.wanted ?? null, words: projectWords, rules: r.rules, top: r.top })
@@ -782,6 +817,7 @@ export const register: Register = (on, options) => {
     await setAccount($, (await $.session.usage()).rateLimits).catch(unset)
     // a session reopened later (an app restart, a resume) finds its bars where it left them
     if ((await read($, plans)).length === 0) await restorePlans($).catch(unset)
+    await restoreView($).catch(unset)
     $.clock.every(1000, async () => {
       const list = await read($, plans)
       for (const id of lastHead.keys()) if (!list.some(p => p.id === id)) lastHead.delete(id)
@@ -840,6 +876,8 @@ export const register: Register = (on, options) => {
     const raw = e as unknown as Raw
     const now = await $.clock.now()
     const id = slug(str(raw.id, 60) || str(raw.title, 80))
+    // no refusal: a refusal would make the model create the bar again
+    if (closedBars.has(id)) return { result: 'The user closed this bar. Carry on without it.' }
     const next = await editPlan($, id, prev => {
       const made = normalize(raw, prev, now, id)
       return typeof made !== 'string' && made.stages.length === 0 ? `No bar "${id}" yet: create it with title and stages.` : made
@@ -869,6 +907,8 @@ export const register: Register = (on, options) => {
     const text = (ran.result as { plan?: unknown } | undefined)?.plan
     const parsed = typeof text === 'string' ? parsePlan(text, await $.clock.now()) : null
     if (!parsed) return ran
+    // a plan you just approved shows, even if you closed the last one
+    closedBars.delete(PLAN_ID)
     await editPlan($, PLAN_ID, prev =>
       prev ? { ...parsed, stages: pointAt(carryDone(parsed.stages, prev.stages)), startedAt: prev.startedAt } : { ...parsed, stages: pointAt(parsed.stages) },
     )
@@ -881,13 +921,17 @@ export const register: Register = (on, options) => {
     if ((await read($, plans)).length === 0) return { text: 'No plan yet. /progress-demo shows a sample.' }
     const open = await read($, isOpen)
     await update($, isOpen, () => !open)
+    await saveView($)
 
     return { text: open ? 'Progress bars hidden.' : 'Progress bars shown.' }
   })
 
   on('command.run', { command: 'progress-demo' }, async $ => {
-    await putPlan($, DEMO(await $.clock.now()))
+    const demo = DEMO(await $.clock.now())
+    closedBars.delete(demo.id)
+    await putPlan($, demo)
     await update($, isOpen, () => true)
+    await saveView($)
 
     return { text: 'Sample plan shown above the prompt.' }
   })
@@ -986,6 +1030,7 @@ export const register: Register = (on, options) => {
       case 'on':
       case 'off':
         await update($, cache, x => ({ ...x, hidden: false }))
+        await saveView($)
         await setCache($, { show: sub === 'on' })
         return { text: sub === 'on' ? 'Cache row on.' : 'Cache row off: no row, no warning, no keep-warm pings.' }
       case 'auto': {
@@ -1157,7 +1202,7 @@ export const register: Register = (on, options) => {
     const press = () =>
       count === 0
         ? $.ui.toast('Cockpit is on. A bar appears when Claude makes a todo list or starts a long task.')
-        : update($, isOpen, () => !open)
+        : update($, isOpen, () => !open).then(() => saveView($))
     // what the last reply really ran on (after the cache saver), so the chip never shows a model that was not used
     let routeText = 'Router on'
     if (r.mode === 'off') routeText = 'Router off'
@@ -1230,6 +1275,7 @@ export const register: Register = (on, options) => {
             label="✕"
             onPress={async () => {
               await update($, cache, x => ({ ...x, hidden: true }))
+              await saveView($)
               $.ui.toast('Cache row hidden for this session. /cache on brings it back.')
             }}
           />
@@ -1273,7 +1319,7 @@ export const register: Register = (on, options) => {
                 </Text>
               )}
               <Text dimColor>{`${String(pct).padStart(3, FIGURE_SPACE)}%`}</Text>
-              <Button key={`close-${p.id}`} plain dimColor label="✕" onPress={() => dropPlan($, p.id)} />
+              <Button key={`close-${p.id}`} plain dimColor label="✕" onPress={() => closeBar($, p.id)} />
             </Box>
           )
         })}

@@ -179,12 +179,13 @@ Claude sees the bars' unfinished steps when it chooses. It decides again only af
 - Hover the pill for the running time, hover a checkpoint for when it was reached
 - Soft sounds when Claude needs a decision, hits an error or finishes (turn them off in the settings)
 - Bars are saved per session and come back when you resume it
+- The ✕ on a bar closes it until your next prompt. To hide all bars for the whole session, click **Progress** in the footer or run `/progress`: they stay hidden until you show them again
 
 Commands: `/progress` (hide or show), `/progress-demo`, `/progress-sounds`, `/progress-clear`.
 
 ## Good to know
 
-- Cockpit is early (0.8.1). Please open an issue when something looks off.
+- Cockpit is early (0.8.2). Please open an issue when something looks off.
 - The keyword rules are English. Add your own words with `/route rule` or the project file.
 - Your choices are saved for every project; `/route off` resets when the app restarts.
 - `.claude/cockpit.json` is read when a session starts and whenever you change a choice.

@@ -5,12 +5,13 @@ import { moveSteps } from '../hooks/plan.ts'
 
 const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, bodyColumns: 100 } } as never
 
-function world(on: On, sounds: string[]) {
+function world(on: On, sounds: string[], saved: object = {}) {
   mock.clock(on, { now: 1_000_000_000_000 })
-  mock.store(on, { settings: {} })
+  mock.store(on, { settings: {}, ...saved })
   mock.env(on, {})
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [] } }) as never)
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
+  on('prompt.submit', (_, e) => ({ text: e.text }) as never)
   on('session.id', () => ({ value: 's1' }) as never)
   on('tool.register', () => ({ value: undefined }) as never)
   on('command.register', () => ({ value: undefined }) as never)
@@ -68,6 +69,48 @@ test("the desktop app's update_plan feeds the tasks bar", async ($, on) => {
   const jumped = moveSteps(advanced, { done: [2], start: 3 }, 2)
   expect(statuses(jumped)).toEqual(['done', 'done', 'active'])
   expect(statuses(moveSteps(jumped, { advance: true }, 3))).toEqual(['done', 'done', 'done'])
+})
+
+const NOTHING = /no implementation for ui.render/
+const mount = ($: any) => $.ui.mount({ plugin: 'cockpit', surface: 'desktop', ...(BAND as object) } as never)
+
+test('a bar you closed stays closed until your next prompt', async ($, on) => {
+  world(on, [])
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+  await create($)
+  const ui = await mount($)
+  await ui.press({ key: 'close-job' })
+  await ui.unmount()
+  // the app restarts the session's process: what was closed is read back from the store
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+
+  // the model moves the bar, then makes it again: neither brings it back, and neither is refused
+  const moved = await $.tool.call({ tool: 'mcp__cockpit__plan_progress', id: 'job', next: true } as never)
+  expect((moved as { deny?: string }).deny).toBeUndefined()
+  await create($)
+  await expect(mount($)).rejects.toThrow(NOTHING)
+
+  await $.prompt.submit({ text: 'next job', origin: { kind: 'sdk' } } as never)
+  await create($)
+  const back = await mount($)
+  expect(await back.find({ key: 'bar-job' })).toBeDefined()
+  await back.unmount()
+})
+
+test('bars you hid stay hidden when the session starts again, and a new bar does not show them', async ($, on) => {
+  // what an earlier run of this session left in the store: bars hidden, the "job" bar closed
+  world(on, [], { 'view:s1': { isOpen: false, hidden: false, closed: ['job'] } })
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+  await create($)
+  await $.tool.call({ tool: 'mcp__cockpit__plan_progress', id: 'other', title: 'Other', stages: [{ name: 'Build', steps: [{ title: 'One' }] }] } as never)
+  await expect(mount($)).rejects.toThrow(NOTHING)
+
+  // shown again: the new bar is there, the closed one is not
+  await $.command.run({ command: 'progress', args: '' } as never)
+  const back = await mount($)
+  expect(await back.find({ key: 'bar-other' })).toBeDefined()
+  expect(await back.find({ key: 'bar-job' })).toBeUndefined()
+  await back.unmount()
 })
 
 test("a subagent's turn does not wipe the main turn's work", async ($, on) => {
